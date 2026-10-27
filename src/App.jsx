@@ -17,10 +17,12 @@ const navigation = [
 function PageHeading({ eyebrow, title, children }) {
   return (
     <div className="page-heading">
-      <p className="eyebrow">
-        <span className="status-dot" />
-        {eyebrow}
-      </p>
+      {eyebrow && (
+        <p className="eyebrow">
+          <span className="status-dot" />
+          {eyebrow}
+        </p>
+      )}
       <h1>{title}</h1>
       {children && <p className="page-description">{children}</p>}
     </div>
@@ -146,7 +148,7 @@ export default function App() {
               <Icon name="plus" size={27} />
             </span>
             <span>
-              Teevra<span className="brand-tagline">We got you quick!</span>
+              Teevra<span className="brand-tagline"></span>
             </span>
           </a>
           <div className="header-actions">
@@ -206,16 +208,15 @@ export default function App() {
       >
         <section hidden={page !== "home"} className="screen home-screen">
           <PageHeading
-            eyebrow="YOUR EMERGENCY COMPANION"
             title={
               <>
-                Here when it
-                <br className="desktop-break" /> matters most
+                We got you
+                <br className="desktop-break" /> quick!
                 <span className="red-period">.</span>
               </>
             }
           >
-            Report an emergency. Stay connected to help.
+            Report an emergency. Get help.
           </PageHeading>
           <div className="home-layout">
             <section className="home-report-card">
@@ -223,11 +224,8 @@ export default function App() {
                 <span className="siren-circle">
                   <Icon name="siren" size={35} />
                 </span>
-                <span className="hero-card-label">
-                  A LITTLE HELP STARTS HERE
-                </span>
               </div>
-              <h2>Need help fast?</h2>
+              <h2>Unsure?</h2>
               <p>
                 Share what’s happening.
                 <br />
