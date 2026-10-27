@@ -1,14 +1,29 @@
-"""FastAPI bridge to OpenRouter."""
+"""FastAPI bridge to OpenRouter and Teevra Department Dispatch System."""
 
+import shutil
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, List, Literal, Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from Backend.models import (
+    DepartmentStats,
+    DispatchRequest,
+    Incident,
+    IncidentCreateRequest,
+    IncidentStatus,
+    ResponderUnit,
+    StatusUpdateRequest,
+)
+from Backend.store import store
+from Backend.triage import evaluate_incident_ai
 
 
 class Settings(BaseSettings):
@@ -117,18 +132,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.openrouter_client = client
             yield
 
-    app = FastAPI(title="Teevra API", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Teevra Emergency & Dispatch API", version="0.2.0", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[origin.strip() for origin in config.cors_origins.split(",") if origin.strip()],
-        allow_methods=["GET", "POST"],
-        allow_headers=["Content-Type"],
+        allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["*"],
     )
 
+    uploads_dir = Path(__file__).resolve().parent.parent / "uploads"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/uploads", StaticFiles(directory=str(uploads_dir)), name="uploads")
+
+    # ------------------ Health & Status ------------------
     @app.get("/api/health")
     async def health():
-        return {"status": "ok", "chat_configured": bool(config.openrouter_api_key.get_secret_value().strip())}
+        stats = store.get_stats()
+        return {
+            "status": "ok",
+            "chat_configured": bool(config.openrouter_api_key.get_secret_value().strip()),
+            "department_online": True,
+            "active_incidents": stats.active_incidents,
+            "available_units": stats.available_units,
+        }
 
+    # ------------------ Chat & Guidance ------------------
     @app.post("/api/chat", response_model=ChatResponse)
     async def chat(payload: ChatRequest, request: Request):
         token = config.openrouter_api_key.get_secret_value().strip()
@@ -168,6 +196,133 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except (ValueError, KeyError, IndexError, TypeError) as error:
             raise HTTPException(502, "The AI provider returned an invalid reply. Please try again.") from error
         return ChatResponse(reply=reply.strip())
+
+    # ------------------ Department Endpoints ------------------
+
+    @app.get("/api/incidents", response_model=List[Incident])
+    async def list_incidents(
+        status: Optional[str] = Query(None, description="Filter by incident status"),
+        priority: Optional[str] = Query(None, description="Filter by priority (P1, P2, P3)"),
+        category: Optional[str] = Query(None, description="Filter by category"),
+        search: Optional[str] = Query(None, description="Search keyword in description or reporter"),
+    ):
+        """Lists incidents for the dispatcher command center."""
+        return store.get_incidents(status=status, priority=priority, category=category, search=search)
+
+    @app.post("/api/incidents", response_model=Incident, status_code=201)
+    async def create_incident(payload: IncidentCreateRequest, request: Request):
+        """Intake new incident from reporter client or manual dispatch. Automatically evaluates AI triage."""
+        client = getattr(request.app.state, "openrouter_client", None)
+        triage = await evaluate_incident_ai(
+            description=payload.description,
+            attachments_count=len(payload.attachments),
+            client=client,
+            api_key=config.openrouter_api_key,
+            model=config.openrouter_model,
+        )
+        incident = store.create_incident(payload, triage)
+        return incident
+
+    @app.get("/api/incidents/{incident_id}", response_model=Incident)
+    async def get_incident(incident_id: str):
+        """Retrieves complete emergency dossier, attachments, and timeline for an incident."""
+        incident = store.get_incident(incident_id)
+        if not incident:
+            raise HTTPException(404, f"Incident {incident_id} not found.")
+        return incident
+
+    @app.post("/api/incidents/{incident_id}/dispatch", response_model=Incident)
+    async def dispatch_incident(incident_id: str, payload: DispatchRequest):
+        """Operator approves dispatch and assigns an emergency responder unit."""
+        try:
+            incident = store.dispatch_unit(
+                incident_id=incident_id,
+                unit_id=payload.unit_id,
+                operator_name=payload.operator_name,
+                operator_notes=payload.operator_notes,
+                custom_eta=payload.eta_minutes,
+            )
+            return incident
+        except KeyError as err:
+            raise HTTPException(404, str(err))
+
+    @app.patch("/api/incidents/{incident_id}/status", response_model=Incident)
+    async def update_status(incident_id: str, payload: StatusUpdateRequest):
+        """Updates status lifecycle (dispatched -> en_route -> on_scene -> resolved)."""
+        try:
+            incident = store.update_incident_status(
+                incident_id=incident_id,
+                status=payload.status,
+                actor=payload.actor,
+                message=payload.message,
+            )
+            return incident
+        except KeyError as err:
+            raise HTTPException(404, str(err))
+
+    @app.post("/api/incidents/{incident_id}/triage", response_model=Incident)
+    async def reevaluate_triage(incident_id: str, request: Request):
+        """Operator requests fresh AI re-evaluation of incident triage."""
+        incident = store.get_incident(incident_id)
+        if not incident:
+            raise HTTPException(404, f"Incident {incident_id} not found.")
+
+        client = getattr(request.app.state, "openrouter_client", None)
+        triage = await evaluate_incident_ai(
+            description=incident.description,
+            attachments_count=len(incident.attachments),
+            client=client,
+            api_key=config.openrouter_api_key,
+            model=config.openrouter_model,
+        )
+        updated = store.update_triage(incident_id, triage, actor="Operator Requested AI Triage")
+        return updated
+
+    @app.get("/api/responders", response_model=List[ResponderUnit])
+    async def list_responders():
+        """Lists all emergency fleet units and their readiness."""
+        return store.get_responders()
+
+    @app.patch("/api/responders/{unit_id}/status", response_model=ResponderUnit)
+    async def update_responder_status(unit_id: str, status: str = Query(..., description="New unit status")):
+        """Updates readiness status of an emergency vehicle."""
+        try:
+            return store.update_responder_status(unit_id, status)
+        except KeyError as err:
+            raise HTTPException(404, str(err))
+
+    @app.get("/api/department/stats", response_model=DepartmentStats)
+    async def get_department_stats():
+        """Returns real-time emergency department operational statistics."""
+        return store.get_stats()
+
+    # ------------------ Multipart Media Upload ------------------
+    @app.post("/api/upload")
+    async def upload_file(file: UploadFile = File(...)):
+        """Uploads an incident scene photo or voice note."""
+        original_name = file.filename or "evidence.jpg"
+        ext = Path(original_name).suffix.lower()
+        if not ext:
+            ext = ".jpg" if (file.content_type or "").startswith("image") else ".webm"
+
+        file_id = f"ev-{uuid.uuid4().hex[:10]}"
+        unique_name = f"{file_id}{ext}"
+        destination = uploads_dir / unique_name
+
+        try:
+            with open(destination, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+        except Exception as err:
+            raise HTTPException(500, f"Failed to save evidence file: {err}")
+
+        is_img = (file.content_type or "").startswith("image") or ext in (".jpg", ".jpeg", ".png", ".webp")
+        return {
+            "id": file_id,
+            "name": original_name,
+            "url": f"/uploads/{unique_name}",
+            "kind": "image" if is_img else "audio",
+            "size": destination.stat().st_size,
+        }
 
     return app
 

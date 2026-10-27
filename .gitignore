@@ -43,6 +43,9 @@ __pycache__/
 .ruff_cache/
 *.sqlite
 *.sqlite3
+*.db
+*.db-*
+Backend/*.db*
 uploads/
 recordings/
 

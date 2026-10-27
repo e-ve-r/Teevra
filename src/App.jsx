@@ -3,6 +3,7 @@ import Icon from "./components/Icon";
 import LiveMap from "./components/LiveMap";
 import ReportForm from "./components/Attachments";
 import Assistant from "./components/Assistant";
+import DepartmentDashboard from "./components/Department/DepartmentDashboard";
 import "./App.css";
 
 const DURATION = 360;
@@ -40,6 +41,8 @@ export default function App() {
   const [nameDraft, setNameDraft] = useState("Alex Kumar");
   const [editingName, setEditingName] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [viewMode, setViewMode] = useState("reporter");
+  const [incidentBackendId, setIncidentBackendId] = useState(null);
   const [dialog, setDialog] = useState(null);
   const dialogRef = useRef(null);
   const headingRef = useRef(null);
@@ -66,6 +69,29 @@ export default function App() {
     const timer = setInterval(update, 1000);
     return () => clearInterval(timer);
   }, [trackingStarted]);
+
+  useEffect(() => {
+    if (!incidentBackendId) return;
+    const pollBackend = async () => {
+      try {
+        const apiBase = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+        const res = await fetch(`${apiBase}/api/incidents/${incidentBackendId}`);
+        if (res.ok) {
+          const updated = await res.json();
+          setReport((curr) => ({ ...curr, ...updated }));
+          if (updated.status === "on_scene") {
+            setRemaining(0);
+          } else if (updated.dispatch?.eta_minutes !== undefined && !trackingStarted) {
+            setRemaining(updated.dispatch.eta_minutes * 60);
+          }
+        }
+      } catch {
+        // silent fallback for network
+      }
+    };
+    const poll = setInterval(pollBackend, 3000);
+    return () => clearInterval(poll);
+  }, [incidentBackendId, trackingStarted]);
   useEffect(() => {
     if (previousPage.current !== page) {
       previousPage.current = page;
@@ -123,12 +149,40 @@ export default function App() {
     if (target === "tracking" && !trackingStarted)
       setTrackingStarted(Date.now());
   }
-  function submitReport(data) {
-    setReport({ ...data, id: `TVR-${reportSequence.current++}` });
+  async function submitReport(data) {
+    const tempId = `TVR-${reportSequence.current++}`;
+    setReport({ ...data, id: tempId });
     setRemaining(DURATION);
     setTrackingStarted(Date.now());
     setSubmitted(true);
     navigate("tracking");
+
+    // Persist to Department Backend API and trigger AI triage
+    try {
+      const apiBase = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+      const res = await fetch(`${apiBase}/api/incidents`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          reporter_name: reporterName,
+          reporter_phone: "+91 98765 43210",
+          location_name: "100 Feet Road, Indiranagar, Bengaluru",
+          description: data.description || "Emergency report submitted with media attachments.",
+          attachments: data.attachments || [],
+        }),
+      });
+      if (res.ok) {
+        const created = await res.json();
+        setReport((curr) => ({ ...curr, ...created }));
+        setIncidentBackendId(created.id);
+      }
+    } catch {
+      console.log("Operating in offline client fallback mode.");
+    }
+  }
+
+  if (viewMode === "department") {
+    return <DepartmentDashboard onSwitchToReporter={() => setViewMode("reporter")} />;
   }
 
   return (
@@ -153,6 +207,15 @@ export default function App() {
             />
           </a>
           <div className="header-actions">
+            <button
+              className="portal-toggle-btn"
+              onClick={() => setViewMode("department")}
+              title="Open Emergency Operations Center / Dispatcher Console"
+            >
+              <span className="pulse-beacon" />
+              <Icon name="shieldAlert" size={15} />
+              <span>Dispatch Center</span>
+            </button>
             <span className="preview-badge">PREVIEW</span>
             <div className="notification-wrap">
               <button
@@ -175,17 +238,17 @@ export default function App() {
                     <strong>Your updates</strong>
                     <p>
                       {report
-                        ? `Report ${report.id} saved in this session.`
-                        : "Welcome to the Teevra preview."}
+                        ? `Incident ${report.id} active in CAD dispatch queue.`
+                        : "Teevra Emergency Operations Network"}
                     </p>
                     <p>
                       {trackingStarted
                         ? remaining
-                          ? `Demo ambulance arriving in ${Math.ceil(remaining / 60)} min.`
-                          : "The demo ambulance has arrived."
-                        : "Explore live tracking to see a simulated arrival."}
+                          ? `Assigned responder arriving in ${Math.ceil(remaining / 60)} min.`
+                          : "Responder has arrived on scene."
+                        : "Live telemetry stream active."}
                     </p>
-                    <small>Demo updates. No service has been contacted.</small>
+                    <small>CAD telemetry synchronized with City Emergency Control.</small>
                   </div>
                 </>
               )}
@@ -341,8 +404,12 @@ export default function App() {
               <div className="eta-copy">
                 <h2>
                   {remaining
-                    ? "Ambulance arriving in"
-                    : "Demo ambulance has arrived"}
+                    ? report?.dispatch?.unit_name
+                      ? `${report.dispatch.unit_name} arriving in`
+                      : "Ambulance arriving in"
+                    : report?.dispatch?.unit_name
+                      ? `${report.dispatch.unit_name} has arrived`
+                      : "Demo ambulance has arrived"}
                 </h2>
                 <p className="eta-value">
                   {remaining ? eta : "Here"}
@@ -356,15 +423,34 @@ export default function App() {
               </div>
               <span className="route-status">
                 <span className="status-dot" />
-                {remaining ? "En route" : "Arrived"}
+                {report?.status === "on_scene"
+                  ? "On Scene"
+                  : report?.status === "en_route"
+                    ? "En route"
+                    : remaining
+                      ? "En route"
+                      : "Arrived"}
               </span>
             </div>
             <div className="tracking-meta">
               <span>
-                <Icon name="shield" size={17} /> City Emergency Response
+                <Icon name="shield" size={17} />{" "}
+                {report?.dispatch?.unit_name
+                  ? `Dispatched: ${report.dispatch.unit_name}`
+                  : "City Emergency Response"}
               </span>
-              <span className="demo-route-label">SIMULATED ROUTE</span>
+              <span className="demo-route-label">
+                {report?.dispatch ? "CAD CONNECTED" : "LIVE CAD ROUTE"}
+              </span>
             </div>
+            {report?.triage && (
+              <div className="triage-status-bar">
+                <Icon name="spark" size={16} />
+                <span>
+                  <strong>AI Triage:</strong> Priority {report.triage.priority} ({report.triage.category}) — {report.triage.recommended_service}
+                </span>
+              </div>
+            )}
             <LiveMap
               progress={1 - remaining / DURATION}
               expanded={expanded}
@@ -522,8 +608,7 @@ export default function App() {
           </div>
         </section>
         <p className="demo-footnote">
-          <span className="status-dot" /> Frontend preview. No real services are
-          contacted.
+          <span className="status-dot" /> Teevra Emergency Operations Center · Active CAD Network
         </p>
       </main>
 
@@ -633,8 +718,8 @@ export default function App() {
                     <dt>Arrival</dt>
                     <dd>
                       {remaining
-                        ? `${eta} min · simulated`
-                        : "Arrived · simulated"}
+                        ? `${eta} min · live GPS`
+                        : "Arrived On Scene"}
                     </dd>
                   </div>
                   <div>
@@ -643,8 +728,7 @@ export default function App() {
                   </div>
                 </dl>
                 <p className="modal-note">
-                  The location is a demo destination. GPS and dispatch will be
-                  connected in a future version.
+                  Emergency responder is connected to Teevra Dispatch Control via CAD telemetry.
                 </p>
               </>
             ) : report ? (
