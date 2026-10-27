@@ -144,12 +144,13 @@ export default function App() {
             }}
             aria-label="Teevra home"
           >
-            <span className="brand-shield">
-              <Icon name="plus" size={27} />
-            </span>
-            <span>
-              Teevra<span className="brand-tagline"></span>
-            </span>
+            <img
+              className="brand-logo"
+              src="/TeevraLogo.png"
+              alt="Teevra"
+              width={1774}
+              height={887}
+            />
           </a>
           <div className="header-actions">
             <span className="preview-badge">PREVIEW</span>
@@ -435,7 +436,7 @@ export default function App() {
           >
             Ask a question. We’re right here with you.
           </PageHeading>
-          <Assistant remaining={remaining} report={report} />
+          <Assistant remaining={remaining} report={report} trackingStarted={trackingStarted} />
         </section>
 
         <section hidden={page !== "profile"} className="screen profile-screen">

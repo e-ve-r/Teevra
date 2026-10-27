@@ -1,58 +1,88 @@
 import { useEffect, useRef, useState } from "react";
 import Icon from "./Icon";
 
-export default function Assistant({ remaining, report }) {
+export default function Assistant({ remaining, report, trackingStarted }) {
   const [messages, setMessages] = useState([
     {
       id: "welcome",
       from: "assistant",
-      text: "Hi, I’m Teevra Assist. I can help you find your way around the app, add details to a report, or check the demo arrival time.",
+      text: "Hi, I’m Teevra Assist. I can share basic first-aid steps while you wait for professional help, or help you use the app. For an emergency, call your local emergency service directly—this app cannot dispatch help. What happened?",
     },
   ]);
   const [draft, setDraft] = useState("");
   const [typing, setTyping] = useState(false);
-  const replyTimer = useRef(null);
+  const [error, setError] = useState("");
+  const [failedMessages, setFailedMessages] = useState(null);
+  const requestController = useRef(null);
   const messageList = useRef(null);
-  useEffect(() => () => clearTimeout(replyTimer.current), []);
+  useEffect(() => () => requestController.current?.abort(), []);
   useEffect(() => {
     if (messageList.current)
       messageList.current.scrollTop = messageList.current.scrollHeight;
   }, [messages, typing]);
 
+  async function requestReply(conversation) {
+    const controller = new AbortController();
+    requestController.current = controller;
+    const timeout = setTimeout(() => controller.abort(), 60000);
+    setTyping(true);
+    setError("");
+    setFailedMessages(null);
+    try {
+      const apiBase = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+      const response = await fetch(`${apiBase}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          messages: conversation.filter((message) => message.id !== "welcome")
+            .slice(-8)
+            .map((message) => ({ role: message.from, content: message.text.slice(0, 2000) })),
+          context: {
+            remaining_seconds: remaining,
+            tracking_started: Boolean(trackingStarted),
+            has_report: Boolean(report),
+            attachment_count: report?.attachments?.length || 0,
+          },
+        }),
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(typeof data?.detail === "string"
+          ? data.detail : "Chat is unavailable. Check that the backend is running.");
+      }
+      if (typeof data?.reply !== "string" || !data.reply.trim()) {
+        throw new Error("The assistant returned an empty reply. Please try again.");
+      }
+      setMessages((current) => [
+        ...current,
+        { id: crypto.randomUUID(), from: "assistant", text: data.reply },
+      ]);
+    } catch (failure) {
+      setError(failure.name === "AbortError"
+        ? "The request timed out. Please try again."
+        : failure instanceof TypeError
+          ? "Cannot connect to chat. Check that the backend is running."
+          : failure.message);
+      setFailedMessages(conversation);
+    } finally {
+      clearTimeout(timeout);
+      requestController.current = null;
+      setTyping(false);
+    }
+  }
+
   function sendMessage(event, suggestion) {
     event?.preventDefault();
     const text = (suggestion || draft).trim();
     if (!text || typing) return;
-    setMessages((current) => [
-      ...current,
+    const conversation = [
+      ...messages,
       { id: crypto.randomUUID(), from: "user", text },
-    ]);
+    ];
+    setMessages(conversation);
     setDraft("");
-    setTyping(true);
-    replyTimer.current = setTimeout(() => {
-      let reply =
-        "I’m a demo assistant for now. Use the red Report button to add a photo, type a description, or record your voice. Your information stays in this session until a backend is connected.";
-      if (/where|arriv|eta|long|time|track/i.test(text))
-        reply =
-          remaining > 0
-            ? `The simulated ambulance is about ${Math.ceil(remaining / 60)} minutes away. Tap Live tracking in the bottom bar to follow its route. This is demo tracking; no real service has been dispatched.`
-            : "The demo ambulance has reached the reported location. This is a simulated arrival; no real service has been dispatched.";
-      else if (/photo|image|upload|record|audio|voice/i.test(text))
-        reply =
-          "Tap the red Report button, then choose Open camera or Upload image. Describe the emergency below, or tap the microphone to record a voice note. You can also upload an existing audio recording.";
-      else if (/my report|submitted|details/i.test(text) && report)
-        reply = `Your demo report ${report.id} includes ${report.attachments.length} attachment${report.attachments.length === 1 ? "" : "s"}${report.description ? " and a written description" : ""}. You can see it under Profile → Your latest report. Nothing has been sent to emergency services.`;
-      else if (
-        /hurt|bleed|breath|pain|medical|injur|safe|emergency/i.test(text)
-      )
-        reply =
-          "This demo assistant cannot assess an emergency, give medical advice, or contact responders. If someone needs urgent help, contact your local emergency service directly.";
-      setMessages((current) => [
-        ...current,
-        { id: crypto.randomUUID(), from: "assistant", text: reply },
-      ]);
-      setTyping(false);
-    }, 650);
+    requestReply(conversation);
   }
   return (
     <section className="chat-surface surface">
@@ -64,7 +94,7 @@ export default function Assistant({ remaining, report }) {
           <h2>Teevra Assist</h2>
           <p>A little support, right here.</p>
         </div>
-        <span className="small-badge">DEMO</span>
+        <span className="small-badge">AI</span>
       </div>
       <div
         className="chat-messages"
@@ -90,7 +120,7 @@ export default function Assistant({ remaining, report }) {
         ))}
         {typing && (
           <div className="typing-indicator">
-            Preparing a demo reply <span>•••</span>
+            Preparing a reply <span>•••</span>
           </div>
         )}
       </div>
@@ -103,6 +133,14 @@ export default function Assistant({ remaining, report }) {
               <Icon name="arrow" size={17} />
             </button>
           ))}
+        </div>
+      )}
+      {error && (
+        <div className="chat-error" role="alert">
+          <p>{error}</p>
+          <button type="button" disabled={typing} onClick={() => requestReply(failedMessages)}>
+            Retry
+          </button>
         </div>
       )}
       <form className="chat-composer" onSubmit={sendMessage}>
@@ -122,7 +160,7 @@ export default function Assistant({ remaining, report }) {
         </button>
       </form>
       <p className="chat-disclaimer">
-        Demo responses · Not an emergency service
+        AI can make mistakes. Not an emergency service. Messages are sent to OpenRouter and its inference provider.
       </p>
     </section>
   );

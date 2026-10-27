@@ -4,9 +4,9 @@
 
 Teevra gives the person reporting an emergency a simple place to share photos, describe an incident, record a voice note, and follow the arrival of help. The interface uses blue and red, large headings, and a persistent bottom navigation bar with a central Report button.
 
-The broader project aims to support AI-assisted emergency triage and response coordination, with a human operator approving dispatch decisions. This repository currently contains the reporter frontend demo.
+The broader project aims to support AI-assisted emergency triage and response coordination, with a human operator approving dispatch decisions. This repository contains the reporter frontend and a FastAPI backend for OpenRouter chat.
 
-> **Demo status:** No real emergency service is contacted. Map locations, response assignments, distances, and ETAs are simulated. The chatbot uses preset responses.
+> **Demo status:** No real emergency service is contacted. Map locations, response assignments, distances, and ETAs are simulated. The chatbot uses OpenRouter when the backend is configured.
 
 ## Features
 
@@ -15,7 +15,7 @@ The broader project aims to support AI-assisted emergency triage and response co
 | Home | A prominent emergency-report action and shortcuts to tracking and chat. |
 | Report | Camera/gallery image selection, a description of up to 500 characters, local microphone recording, and audio-file uploads. Attachments can be previewed and removed. |
 | Live tracking | A six-minute simulated response, moving ambulance marker, countdown, distance, arrival status, and map zoom/recenter controls. A compact ETA also appears in the bottom navigation. |
-| AI chat | A working conversation interface with local preset replies about reporting and demo tracking. |
+| AI chat | OpenRouter model replies through FastAPI, recent conversation history, simulated tracking context, and retry on errors. |
 | Profile | An editable demo name and a summary of the latest report submitted in the current session. |
 
 A report requires a description or at least one attachment. Each file must be smaller than 20 MB. Submitting a report opens tracking and restarts the simulated response.
@@ -26,7 +26,8 @@ A report requires a description or at least one attachment. Each file must be sm
 - Vite 8 for development and production builds.
 - Plain CSS for responsive layouts and styling.
 - Browser `MediaRecorder` and File APIs for local audio and attachments.
-- Inline SVG for icons and the illustrative map.
+- Lucide React for icons and SVG for the illustrative map.
+- FastAPI, HTTPX, and OpenRouter for chat.
 - ESLint for code checks.
 
 ## Getting started
@@ -47,7 +48,9 @@ npm run dev
 
 Open the local URL printed by Vite, normally `http://localhost:5173`.
 
-No API keys, database, or environment variables are required for the current demo. Microphone recording requires permission and a supported browser running on localhost or HTTPS. On supported mobile devices, Open camera opens the native camera picker. Other devices may show a file picker.
+The frontend works without API keys, but AI replies require the backend and a server-side OpenRouter token. Follow [Backend setup](Backend/README.md) to configure and run it. Vite forwards `/api` requests to `http://127.0.0.1:8000`; restart Vite after changing its configuration. A database is not required.
+
+Microphone recording requires permission and a supported browser running on localhost or HTTPS. On supported mobile devices, Open camera opens the native camera picker. Other devices may show a file picker.
 
 ### Available commands
 
@@ -62,12 +65,13 @@ No API keys, database, or environment variables are required for the current dem
 
 ```text
 Teevra/
+├── Backend/                   # FastAPI chat API, configuration, and tests
 ├── public/                    # Static assets and favicon
 ├── src/
 │   ├── components/
-│   │   ├── Assistant.jsx      # Chat UI and preset demo replies
+│   │   ├── Assistant.jsx      # Chat UI and backend requests
 │   │   ├── Attachments.jsx    # Report form, file uploads, voice recording
-│   │   ├── Icon.jsx           # Shared SVG icons
+│   │   ├── Icon.jsx           # Shared Lucide React icons
 │   │   └── LiveMap.jsx        # Illustrative map and moving vehicle
 │   ├── App.jsx                # Screens, navigation, report state, ETA timer
 │   ├── App.css                # Component styles and responsive layouts
@@ -86,7 +90,8 @@ Teevra/
 - Files are previewed with local object URLs. There is no upload endpoint or persistent storage.
 - Voice reporting records audio locally. Speech-to-text is not connected.
 - The destination and ambulance route are illustrative. The app does not obtain GPS coordinates or use a live map provider.
-- The assistant makes no external AI requests and does not provide emergency or medical guidance.
+- Chat messages and a minimal summary (tracking state, simulated ETA, report presence, and attachment count) are sent through FastAPI to OpenRouter and its inference provider. Report text, media, and reporter names are not automatically included. Do not enter sensitive personal data in chat.
+- AI replies can be incorrect; the assistant cannot contact emergency services or dispatch responders.
 - Authentication, real notifications, dispatch, and responder communication are not implemented.
 - The stylesheet requests Google Fonts, with system fonts as fallbacks.
 
@@ -96,7 +101,7 @@ For an actual emergency, contact your local emergency service directly.
 
 The project presentation describes the following future work. These capabilities are not implemented in this frontend:
 
-- A FastAPI backend for incident intake, users, dispatch, and monitoring.
+- Backend endpoints for incident intake, users, dispatch, and monitoring (only chat and health are implemented).
 - Speech-to-text, image analysis, and AI-assisted incident and severity assessment.
 - Resource recommendations and responder ranking by traffic-aware ETA.
 - An operator dashboard for reviewing recommendations and approving dispatch.

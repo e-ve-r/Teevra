@@ -17,45 +17,21 @@
   gap: 18px;
 }
 .brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-family: "Manrope", sans-serif;
-  font-size: 27px;
-  font-weight: 800;
-  letter-spacing: -1px;
-  color: #10234d;
-  line-height: 1.15;
-}
-.brand-shield {
-  width: 36px;
-  height: 43px;
-  background: var(--red);
-  color: white;
-  display: grid;
-  place-items: center;
-  clip-path: polygon(
-    50% 0,
-    100% 14%,
-    96% 59%,
-    83% 78%,
-    50% 100%,
-    17% 78%,
-    4% 59%,
-    0 14%
-  );
-}
-.brand-shield svg {
-  stroke-width: 3.2;
-}
-.brand-tagline {
+  position: relative;
   display: block;
-  color: var(--muted);
-  font-family: "DM Sans", sans-serif;
-  font-size: 11px;
-  letter-spacing: 0;
-  font-weight: 400;
-  margin-top: 5px;
+  width: 144px;
+  aspect-ratio: 1454 / 444;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+.brand-logo {
+  /* Offset the transparent margins in the supplied logo. */
+  position: absolute;
+  width: 122.01%;
+  height: auto;
+  max-width: none;
+  left: -11.69%;
+  top: -52.7%;
 }
 .header-actions {
   display: flex;
@@ -1213,6 +1189,7 @@ h1 {
   max-width: calc(100% - 38px);
 }
 .message-bubble {
+  white-space: pre-wrap;
   padding: 14px 15px;
   background: #f1f5fc;
   border-radius: 0 15px 15px 15px;
@@ -1272,6 +1249,22 @@ h1 {
 .chat-suggestions button:hover {
   background: #f2f7ff;
   border-color: #c6daff;
+}
+.chat-error {
+  margin: 0 20px 16px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #fff0f3;
+  color: #9d233b;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.chat-error button {
+  margin-top: 8px;
+  padding: 6px 12px;
+  border: 1px solid currentColor;
+  border-radius: 8px;
+  background: transparent;
 }
 .chat-composer {
   display: flex;
@@ -1521,15 +1514,7 @@ h1 {
     padding: 0 32px;
   }
   .brand {
-    font-size: 31px;
-    gap: 12px;
-  }
-  .brand-tagline {
-    font-size: 12px;
-  }
-  .brand-shield {
-    width: 42px;
-    height: 49px;
+    width: 174px;
   }
   .header-actions {
     gap: 20px;
