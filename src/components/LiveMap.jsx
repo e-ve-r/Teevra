@@ -218,8 +218,7 @@ export default function LiveMap({ progress, expanded, onExpand }) {
         </g>
       </svg>
       <div className="map-label">
-        <span className="status-dot" /> Live route{" "}
-        <span className="map-demo">DEMO</span>
+        <span className="status-dot" /> Live route stream
       </div>
       <div className="map-tools">
         <button
@@ -246,7 +245,7 @@ export default function LiveMap({ progress, expanded, onExpand }) {
         <Icon name={expanded ? "minus" : "plus"} size={13} />
       </button>
       <span className="map-attribution">
-        Illustrative map · simulated location
+        Teevra CAD Telemetry · Bengaluru Sector
       </span>
     </div>
   );

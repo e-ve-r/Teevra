@@ -1941,3 +1941,55 @@ h1 {
     gap: 8px;
   }
 }
+
+/* ================= DISPATCH PORTAL TOGGLE & TRIAGE BAR ================= */
+.portal-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: #ffffff;
+  color: var(--blue);
+  border: 1px solid #dce6f7;
+  border-radius: 20px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 8px rgba(23, 101, 244, 0.08);
+}
+
+.portal-toggle-btn:hover {
+  background: #edf3ff;
+  border-color: #bcd5ff;
+  color: #0f4ec2;
+  transform: translateY(-1px);
+}
+
+.pulse-beacon {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ef4444;
+  box-shadow: 0 0 8px #ef4444;
+  animation: pulse-ring 1.8s infinite;
+}
+
+.triage-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  color: #166534;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  margin-top: 14px;
+}
+
+.triage-status-bar strong {
+  color: #14532d;
+}
+
