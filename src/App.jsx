@@ -201,10 +201,11 @@ export default function App() {
             <img
               className="brand-logo"
               src="/TeevraLogo.png"
-              alt="Teevra"
-              width={1774}
-              height={887}
+              alt=""
+              width={64}
+              height={64}
             />
+            <span className="brand-name">Teevra</span>
           </a>
           <div className="header-actions">
             <button
