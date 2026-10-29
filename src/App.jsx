@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import Icon from "./components/Icon";
-import LiveMap from "./components/LiveMap";
 import ReportForm from "./components/Attachments";
 import Assistant from "./components/Assistant";
-import DepartmentDashboard from "./components/Department/DepartmentDashboard";
+import TacticalMap from "./components/Department/TacticalMap";
+import { api, post, statusLabel } from "./lib/api";
 import "./App.css";
 
-const DURATION = 360;
 const navigation = [
   { id: "home", label: "Home", icon: "home" },
   { id: "tracking", label: "Live tracking", icon: "pin" },
@@ -14,782 +13,107 @@ const navigation = [
   { id: "chat", label: "AI chat", icon: "chat" },
   { id: "profile", label: "Profile", icon: "user" },
 ];
-
+const closed = (report) => ["resolved", "cancelled"].includes(report?.status);
 function PageHeading({ eyebrow, title, children }) {
-  return (
-    <div className="page-heading">
-      {eyebrow && (
-        <p className="eyebrow">
-          <span className="status-dot" />
-          {eyebrow}
-        </p>
-      )}
-      <h1>{title}</h1>
-      {children && <p className="page-description">{children}</p>}
-    </div>
-  );
+  return <div className="page-heading">{eyebrow && <p className="eyebrow"><span className="status-dot" />{eyebrow}</p>}<h1>{title}<span className="red-period">.</span></h1>{children && <p className="page-description">{children}</p>}</div>;
 }
 
 export default function App() {
   const [page, setPage] = useState("home");
-  const [trackingStarted, setTrackingStarted] = useState(null);
-  const [remaining, setRemaining] = useState(DURATION);
-  const [expanded, setExpanded] = useState(false);
+  const [liveMap, setLiveMap] = useState(null);
   const [report, setReport] = useState(null);
-  const [submitted, setSubmitted] = useState(false);
-  const [reporterName, setReporterName] = useState("Alex Kumar");
-  const [nameDraft, setNameDraft] = useState("Alex Kumar");
-  const [editingName, setEditingName] = useState(false);
-  const [notificationsOpen, setNotificationsOpen] = useState(false);
-  const [viewMode, setViewMode] = useState("reporter");
-  const [incidentBackendId, setIncidentBackendId] = useState(null);
-  const [dialog, setDialog] = useState(null);
-  const dialogRef = useRef(null);
-  const headingRef = useRef(null);
-  const previousPage = useRef("home");
-  const reportSequence = useRef(2048);
-  const eta = `${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, "0")}`;
-  const initials = reporterName
-    .split(/\s+/)
-    .slice(0, 2)
-    .map((n) => n[0])
-    .join("")
-    .toUpperCase();
+  const [incidentId, setIncidentId] = useState(() => sessionStorage.getItem("teevra.incident"));
+  const [reporterName, setReporterName] = useState(() => sessionStorage.getItem("teevra.name") || "Reporter");
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [updateOpen, setUpdateOpen] = useState(false);
+  const heading = useRef(null);
+  const initials = reporterName.split(/\s+/).slice(0, 2).map((n) => n[0]).join("").toUpperCase();
 
   useEffect(() => {
-    if (!trackingStarted) return;
-    function update() {
-      setRemaining(
-        Math.max(
-          0,
-          DURATION - Math.floor((Date.now() - trackingStarted) / 1000),
-        ),
-      );
-    }
-    const timer = setInterval(update, 1000);
-    return () => clearInterval(timer);
-  }, [trackingStarted]);
-
-  useEffect(() => {
-    if (!incidentBackendId) return;
-    const pollBackend = async () => {
+    if (!incidentId) return;
+    let cancelled = false;
+    async function refresh() {
       try {
-        const apiBase = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
-        const res = await fetch(`${apiBase}/api/incidents/${incidentBackendId}`);
-        if (res.ok) {
-          const updated = await res.json();
-          setReport((curr) => ({ ...curr, ...updated }));
-          if (updated.status === "on_scene") {
-            setRemaining(0);
-          } else if (updated.dispatch?.eta_minutes !== undefined && !trackingStarted) {
-            setRemaining(updated.dispatch.eta_minutes * 60);
-          }
+        const updated = await api(`/api/incidents/${incidentId}`);
+        const map = await api(`/api/incidents/${incidentId}/map`).catch(() => null);
+        if (!cancelled) {
+          setReport((current) => current && current.id === updated.id && current.revision > updated.revision ? current : updated);
+          if (map) setLiveMap(map);
+          setError("");
         }
-      } catch {
-        // silent fallback for network
-      }
-    };
-    const poll = setInterval(pollBackend, 3000);
-    return () => clearInterval(poll);
-  }, [incidentBackendId, trackingStarted]);
-  useEffect(() => {
-    if (previousPage.current !== page) {
-      previousPage.current = page;
-      window.scrollTo({ top: 0, behavior: "instant" });
-      headingRef.current?.focus({ preventScroll: true });
-    }
-  }, [page]);
-  useEffect(() => {
-    if (!dialog) return;
-    const previous = document.activeElement;
-    dialogRef.current?.focus();
-    function handleKey(event) {
-      if (event.key === "Escape") setDialog(null);
-      if (event.key === "Tab") {
-        const controls = [
-          ...dialogRef.current.querySelectorAll("button, a, input"),
-        ].filter((el) => !el.disabled);
-        const first = controls[0],
-          last = controls.at(-1);
-        if (
-          event.shiftKey &&
-          (document.activeElement === first ||
-            document.activeElement === dialogRef.current)
-        ) {
-          event.preventDefault();
-          last?.focus();
-        }
-        if (!event.shiftKey && document.activeElement === last) {
-          event.preventDefault();
-          first?.focus();
-        }
+      } catch (failure) {
+        if (!cancelled) setError(failure.message);
       }
     }
-    document.addEventListener("keydown", handleKey);
-    const overflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.removeEventListener("keydown", handleKey);
-      document.body.style.overflow = overflow;
-      previous?.focus();
-    };
-  }, [dialog]);
-  useEffect(() => {
-    if (!notificationsOpen) return;
-    const close = (event) => {
-      if (event.key === "Escape") setNotificationsOpen(false);
-    };
-    document.addEventListener("keydown", close);
-    return () => document.removeEventListener("keydown", close);
-  }, [notificationsOpen]);
+    refresh();
+    const timer = setInterval(refresh, 3000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [incidentId]);
 
   function navigate(target) {
     setPage(target);
-    setNotificationsOpen(false);
-    if (target === "tracking" && !trackingStarted)
-      setTrackingStarted(Date.now());
+    window.scrollTo({ top: 0, behavior: "instant" });
+    heading.current?.focus({ preventScroll: true });
   }
   async function submitReport(data) {
-    const tempId = `TVR-${reportSequence.current++}`;
-    setReport({ ...data, id: tempId });
-    setRemaining(DURATION);
-    setTrackingStarted(Date.now());
-    setSubmitted(true);
+    const created = await post("/api/incidents", { ...data, description: data.description || "Media report. Review the attached evidence to assess the emergency." });
+    sessionStorage.setItem("teevra.incident", created.id);
+    setIncidentId(created.id);
+    setReport(created);
+    setNotice("Your report has been received. You can keep sharing changes below.");
     navigate("tracking");
-
-    // Persist to Department Backend API and trigger AI triage
-    try {
-      const apiBase = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
-      const res = await fetch(`${apiBase}/api/incidents`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          reporter_name: reporterName,
-          reporter_phone: "+91 98765 43210",
-          location_name: "100 Feet Road, Indiranagar, Bengaluru",
-          description: data.description || "Emergency report submitted with media attachments.",
-          attachments: data.attachments || [],
-        }),
-      });
-      if (res.ok) {
-        const created = await res.json();
-        setReport((curr) => ({ ...curr, ...created }));
-        setIncidentBackendId(created.id);
-      }
-    } catch {
-      console.log("Operating in offline client fallback mode.");
-    }
   }
-
-  if (viewMode === "department") {
-    return <DepartmentDashboard onSwitchToReporter={() => setViewMode("reporter")} />;
+  async function updateReport(data) {
+    const updated = await post(`/api/incidents/${incidentId}/updates`, {
+      description: data.description, attachments: data.attachments || [],
+    });
+    setReport(updated);
+    setNotice("Update received. Your incident assessment and response recommendations have been refreshed.");
   }
+  const dispatches = report?.dispatches || (report?.dispatch ? [report.dispatch] : []);
+  const hasLocation = report?.lat != null && report?.lng != null;
 
-  return (
-    <div className="app-shell">
-      <header className="app-header">
-        <div className="header-inner">
-          <a
-            href="#home"
-            className="brand"
-            onClick={(event) => {
-              event.preventDefault();
-              navigate("home");
-            }}
-            aria-label="Teevra home"
-          >
-            <img
-              className="brand-logo"
-              src="/TeevraLogo.png"
-              alt=""
-              width={64}
-              height={64}
-            />
-            <span className="brand-name">Teevra</span>
-          </a>
-          <div className="header-actions">
-            <button
-              className="portal-toggle-btn"
-              onClick={() => setViewMode("department")}
-              title="Open Emergency Operations Center / Dispatcher Console"
-            >
-              <span className="pulse-beacon" />
-              <Icon name="shieldAlert" size={15} />
-              <span>Dispatch Center</span>
-            </button>
-            <span className="preview-badge">PREVIEW</span>
-            <div className="notification-wrap">
-              <button
-                className="icon-button notification-button"
-                aria-label="Notifications"
-                aria-expanded={notificationsOpen}
-                onClick={() => setNotificationsOpen((v) => !v)}
-              >
-                <Icon name="bell" size={22} />
-                <span className="notification-dot" />
-              </button>
-              {notificationsOpen && (
-                <>
-                  <button
-                    className="notification-dismiss"
-                    aria-label="Dismiss notifications"
-                    onClick={() => setNotificationsOpen(false)}
-                  />
-                  <div className="notification-panel">
-                    <strong>Your updates</strong>
-                    <p>
-                      {report
-                        ? `Incident ${report.id} active in CAD dispatch queue.`
-                        : "Teevra Emergency Operations Network"}
-                    </p>
-                    <p>
-                      {trackingStarted
-                        ? remaining
-                          ? `Assigned responder arriving in ${Math.ceil(remaining / 60)} min.`
-                          : "Responder has arrived on scene."
-                        : "Live telemetry stream active."}
-                    </p>
-                    <small>CAD telemetry synchronized with City Emergency Control.</small>
-                  </div>
-                </>
-              )}
-            </div>
-            <button
-              className="profile-avatar"
-              onClick={() => navigate("profile")}
-              aria-label="Open your profile"
-            >
-              {initials}
-            </button>
+  return <div className="app-shell">
+    <header className="app-header"><div className="header-inner">
+      <a href="/" className="brand" onClick={(e) => { e.preventDefault(); navigate("home"); }} aria-label="Teevra home"><img className="brand-logo" src="/TeevraLogo.png" alt="" width={64} height={64} /><span className="brand-name">Teevra</span></a>
+      <div className="header-actions"><span className="preview-badge">PREVIEW</span><button className="profile-avatar" onClick={() => navigate("profile")} aria-label="Open your profile">{initials}</button></div>
+    </div></header>
+    <main className={`main-content page-${page}`} ref={heading} tabIndex={-1} aria-label={`${navigation.find((n) => n.id === page)?.label} screen`}>
+      <section hidden={page !== "home"} className="screen home-screen">
+        <PageHeading title={<>We got you<br className="desktop-break" /> quick</>}>Report an emergency. Get help.</PageHeading>
+        <div className="home-layout">
+          <section className="home-report-card"><div className="hero-card-top"><span className="siren-circle"><Icon name="siren" size={35} /></span></div><h2>Unsure?</h2><p>Share what’s happening.<br />We’ll help you take the next step.</p><button className="primary-button red-button" onClick={() => navigate("report")}><Icon name="send" size={22} />Report an emergency<Icon name="arrow" size={22} /></button><span className="hero-caption">A photo. A few words. Or just your voice.</span><div className="hero-rings" aria-hidden="true"><span /><span /><span /></div></section>
+          <div className="home-shortcuts">
+            {[{ target: "tracking", icon: "pin", eyebrow: "EVERY STEP OF THE WAY", title: "Your response", text: "Follow your report and share what changes." }, { target: "chat", icon: "spark", eyebrow: "A LITTLE REASSURANCE", title: "Talk to Teevra", text: "Your AI companion, one tap away." }].map((s) => <button key={s.target} className="shortcut-card" onClick={() => navigate(s.target)}><span className="shortcut-icon"><Icon name={s.icon} size={27} /></span><span className="shortcut-content"><span className="shortcut-eyebrow">{s.eyebrow}</span><strong>{s.title}</strong><span>{s.text}</span></span><Icon name="arrow" size={21} /></button>)}
           </div>
         </div>
-      </header>
-
-      <main
-        className={`main-content page-${page}`}
-        ref={headingRef}
-        tabIndex={-1}
-        aria-label={`${navigation.find((item) => item.id === page)?.label} screen`}
-      >
-        <section hidden={page !== "home"} className="screen home-screen">
-          <PageHeading
-            title={
-              <>
-                We got you
-                <br className="desktop-break" /> quick!
-                <span className="red-period">.</span>
-              </>
-            }
-          >
-            Report an emergency. Get help.
-          </PageHeading>
-          <div className="home-layout">
-            <section className="home-report-card">
-              <div className="hero-card-top">
-                <span className="siren-circle">
-                  <Icon name="siren" size={35} />
-                </span>
-              </div>
-              <h2>Unsure?</h2>
-              <p>
-                Share what’s happening.
-                <br />
-                We’ll help you take the next step.
-              </p>
-              <button
-                className="primary-button red-button"
-                onClick={() => navigate("report")}
-              >
-                <Icon name="send" size={22} /> Report an emergency{" "}
-                <Icon name="arrow" size={22} />
-              </button>
-              <span className="hero-caption">
-                A photo. A few words. Or just your voice.
-              </span>
-              <div className="hero-rings" aria-hidden="true">
-                <span />
-                <span />
-                <span />
-              </div>
-            </section>
-            <div className="home-shortcuts">
-              <button
-                className="shortcut-card"
-                onClick={() => navigate("tracking")}
-              >
-                <span className="shortcut-icon">
-                  <Icon name="pin" size={27} />
-                </span>
-                <span className="shortcut-content">
-                  <span className="shortcut-eyebrow">
-                    EVERY STEP OF THE WAY
-                  </span>
-                  <strong>Live tracking</strong>
-                  <span>See where help is and when it arrives.</span>
-                </span>
-                <Icon name="arrow" size={21} />
-              </button>
-              <button
-                className="shortcut-card"
-                onClick={() => navigate("chat")}
-              >
-                <span className="shortcut-icon">
-                  <Icon name="spark" size={27} />
-                </span>
-                <span className="shortcut-content">
-                  <span className="shortcut-eyebrow">A LITTLE REASSURANCE</span>
-                  <strong>Talk to Teevra</strong>
-                  <span>Your AI companion, one tap away.</span>
-                </span>
-                <Icon name="arrow" size={21} />
-              </button>
-            </div>
-          </div>
-        </section>
-
-        <section hidden={page !== "report"} className="screen report-screen">
-          <PageHeading
-            eyebrow="LET’S START WITH THE DETAILS"
-            title={
-              <>
-                Report an emergency<span className="red-period">.</span>
-              </>
-            }
-          >
-            A photo, a few words, or your voice. Every detail helps.
-          </PageHeading>
-          <ReportForm
-            active={page === "report"}
-            onSubmit={submitReport}
-            reporterName={reporterName}
-          />
-        </section>
-
-        <section
-          hidden={page !== "tracking"}
-          className="screen tracking-screen"
-        >
-          <PageHeading
-            eyebrow="CONNECTED, EVERY STEP"
-            title={
-              <>
-                Live tracking<span className="red-period">.</span>
-              </>
-            }
-          >
-            Help on the way. A little more peace of mind.
-          </PageHeading>
-          {submitted && (
-            <div className="success-notice" role="status">
-              <span>
-                <Icon name="check" size={20} />
-              </span>
-              <div>
-                <strong>Your demo report is saved.</strong>
-                <p>Nothing has been sent to emergency services.</p>
-              </div>
-              <button
-                className="icon-button"
-                aria-label="Dismiss report confirmation"
-                onClick={() => setSubmitted(false)}
-              >
-                <Icon name="cross" size={18} />
-              </button>
-            </div>
-          )}
+        {report && <button className="report-home-status surface" onClick={() => navigate("tracking")}><span className="status-dot" /><strong>{report.id}</strong><span>{statusLabel(report.status)}</span><Icon name="arrow" size={18} /></button>}
+      </section>
+      <section hidden={page !== "report"} className="screen report-screen">
+        <PageHeading eyebrow="LET’S START WITH THE DETAILS" title="Report an emergency">A photo, a few words, or your voice. Every detail helps.</PageHeading>
+        {report && !closed(report) && <div className="existing-report-notice"><p>You have an active report, {report.id}. Share a change on that report to keep your response team up to date.</p><button className="secondary-button" onClick={() => { setUpdateOpen(true); navigate("tracking"); }}>Update existing report<Icon name="arrow" size={16} /></button></div>}
+        <ReportForm active={page === "report"} onSubmit={submitReport} reporterName={reporterName} />
+      </section>
+      <section hidden={page !== "tracking"} className="screen tracking-screen">
+        <PageHeading eyebrow="CONNECTED, EVERY STEP" title="Your response">Follow your report. Keep us up to date.</PageHeading>
+        {error && <p role="alert" className="form-error">{error}</p>}
+        {notice && <div className="success-notice" role="status"><Icon name="check" size={20} /><p>{notice}</p><button className="icon-button" aria-label="Dismiss confirmation" onClick={() => setNotice("")}><Icon name="cross" size={18} /></button></div>}
+        {!report ? <div className="surface empty-report"><Icon name="pin" size={32} /><h2>{incidentId ? "Loading your report…" : "Your report will appear here"}</h2><p>Once you submit an emergency, you can follow its response and send updates here.</p><button className="primary-button red-button" onClick={() => navigate("report")}>Report an emergency<Icon name="arrow" size={18} /></button></div> : <>
           <section className="tracking-card surface">
-            <div className="eta-overview">
-              <span className="ambulance-illustration">
-                <Icon name="ambulance" size={47} />
-              </span>
-              <div className="eta-copy">
-                <h2>
-                  {remaining
-                    ? report?.dispatch?.unit_name
-                      ? `${report.dispatch.unit_name} arriving in`
-                      : "Ambulance arriving in"
-                    : report?.dispatch?.unit_name
-                      ? `${report.dispatch.unit_name} has arrived`
-                      : "Demo ambulance has arrived"}
-                </h2>
-                <p className="eta-value">
-                  {remaining ? eta : "Here"}
-                  {remaining > 0 && <span> min</span>}
-                </p>
-                <p className="distance">
-                  {remaining
-                    ? `${((2.4 * remaining) / DURATION).toFixed(1)} km away`
-                    : "At the reported location"}
-                </p>
-              </div>
-              <span className="route-status">
-                <span className="status-dot" />
-                {report?.status === "on_scene"
-                  ? "On Scene"
-                  : report?.status === "en_route"
-                    ? "En route"
-                    : remaining
-                      ? "En route"
-                      : "Arrived"}
-              </span>
-            </div>
-            <div className="tracking-meta">
-              <span>
-                <Icon name="shield" size={17} />{" "}
-                {report?.dispatch?.unit_name
-                  ? `Dispatched: ${report.dispatch.unit_name}`
-                  : "City Emergency Response"}
-              </span>
-              <span className="demo-route-label">
-                {report?.dispatch ? "CAD CONNECTED" : "LIVE CAD ROUTE"}
-              </span>
-            </div>
-            {report?.triage && (
-              <div className="triage-status-bar">
-                <Icon name="spark" size={16} />
-                <span>
-                  <strong>AI Triage:</strong> Priority {report.triage.priority} ({report.triage.category}) — {report.triage.recommended_service}
-                </span>
-              </div>
-            )}
-            <LiveMap
-              progress={1 - remaining / DURATION}
-              expanded={expanded}
-              onExpand={() => setExpanded((value) => !value)}
-            />
-            <div className="destination">
-              <span className="destination-pin">
-                <Icon name="pin" size={22} />
-              </span>
-              <div>
-                <span>REPORTED LOCATION</span>
-                <strong>100 Feet Road, Indiranagar</strong>
-                <p>Bengaluru, Karnataka</p>
-              </div>
-              <button
-                className="icon-button"
-                aria-label="View tracking details"
-                onClick={() => setDialog("tracking")}
-              >
-                <Icon name="chevron" size={21} />
-              </button>
-            </div>
+            <div className="report-response-heading"><div><p className="eyebrow">{report.id}</p><h2>{statusLabel(report.status)}</h2></div><span className="route-status"><span className="status-dot" />{closed(report) ? "Closed" : "Updates every 3 seconds"}</span></div>
+            <div className="response-assignment-list">{dispatches.length ? dispatches.map((d) => <div key={d.unit_id}><Icon name="shield" size={21} /><div><strong>{d.unit_name}</strong><p>{closed(report) ? "Response completed" : report.status === "on_scene" ? "At the incident" : (liveMap?.incident_id === report.id && liveMap.routes.find((r) => r.unit_id === d.unit_id) ? `Road ETA: ${liveMap.routes.find((r) => r.unit_id === d.unit_id).eta_minutes} min · ${liveMap.routes.find((r) => r.unit_id === d.unit_id).distance_km} km` : `Assigned ETA: ${d.eta_minutes} min`)}</p></div></div>) : <p>Your report is in the response queue. A fleet has not been assigned yet.</p>}</div>
+            {hasLocation && page === "tracking" && <TacticalMap incident={report} height="280px" />}
+            <div className="destination"><span className="destination-pin"><Icon name="pin" size={22} /></span><div><span>REPORTED LOCATION</span><strong>{report.location_name}</strong><p>{hasLocation ? `${report.lat.toFixed(5)}, ${report.lng.toFixed(5)}${report.location_accuracy_m ? ` · ±${Math.round(report.location_accuracy_m)} m` : ""}` : "Address provided · GPS not shared"}</p></div></div>
           </section>
-          <div className="response-steps">
-            <div className="response-step complete">
-              <span>
-                <Icon name="check" size={17} />
-              </span>
-              <strong>Report received</strong>
-            </div>
-            <div
-              className={`response-step ${remaining ? "current" : "complete"}`}
-            >
-              <span>
-                <Icon name={remaining ? "ambulance" : "check"} size={18} />
-              </span>
-              <strong>On the way</strong>
-            </div>
-            <div className={`response-step ${remaining ? "" : "current"}`}>
-              <span>
-                <Icon name="pin" size={17} />
-              </span>
-              <strong>Help arrives</strong>
-            </div>
-          </div>
-          <button
-            className="tracking-chat-link"
-            onClick={() => navigate("chat")}
-          >
-            <span className="shortcut-icon">
-              <Icon name="spark" size={23} />
-            </span>
-            <span>
-              <strong>A little support while you wait.</strong>
-              <small>Chat with the demo assistant</small>
-            </span>
-            <Icon name="arrow" size={21} />
-          </button>
-        </section>
-
-        <section hidden={page !== "chat"} className="screen chat-screen">
-          <PageHeading
-            eyebrow="YOU DON’T HAVE TO WAIT ALONE"
-            title={
-              <>
-                A little support<span className="red-period">.</span>
-              </>
-            }
-          >
-            Ask a question. We’re right here with you.
-          </PageHeading>
-          <Assistant remaining={remaining} report={report} trackingStarted={trackingStarted} />
-        </section>
-
-        <section hidden={page !== "profile"} className="screen profile-screen">
-          <PageHeading
-            eyebrow="YOUR REPORTER SPACE"
-            title={
-              <>
-                Your profile<span className="red-period">.</span>
-              </>
-            }
-          >
-            The details that keep everything connected.
-          </PageHeading>
-          <section className="surface profile-card">
-            <span className="large-avatar">{initials}</span>
-            <h2>{reporterName}</h2>
-            <span className="profile-role">Reporter · Demo profile</span>
-            {editingName ? (
-              <form
-                className="name-form"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  if (nameDraft.trim()) {
-                    setReporterName(nameDraft.trim());
-                    setEditingName(false);
-                  }
-                }}
-              >
-                <label htmlFor="reporter-name">Your name</label>
-                <input
-                  id="reporter-name"
-                  value={nameDraft}
-                  onChange={(event) => setNameDraft(event.target.value)}
-                  maxLength={60}
-                  required
-                  autoFocus
-                />
-                <div>
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    onClick={() => {
-                      setNameDraft(reporterName);
-                      setEditingName(false);
-                    }}
-                  >
-                    Cancel
-                  </button>
-                  <button className="primary-button blue-button">
-                    Save name
-                  </button>
-                </div>
-              </form>
-            ) : (
-              <button
-                className="secondary-button"
-                onClick={() => setEditingName(true)}
-              >
-                Edit name <Icon name="arrow" size={16} />
-              </button>
-            )}
-          </section>
-          <div className="profile-links">
-            <button onClick={() => setDialog("report")}>
-              <Icon name="file" size={22} />
-              <span>
-                Your latest report
-                <small>
-                  {report
-                    ? `#${report.id} · Saved locally`
-                    : "No report submitted yet"}
-                </small>
-              </span>
-              <Icon name="chevron" size={19} />
-            </button>
-            <button onClick={() => setDialog("privacy")}>
-              <Icon name="lock" size={22} />
-              <span>
-                About this preview<small>Your data, in this session only</small>
-              </span>
-              <Icon name="chevron" size={19} />
-            </button>
-          </div>
-        </section>
-        <p className="demo-footnote">
-          <span className="status-dot" /> Teevra Emergency Operations Center · Active CAD Network
-        </p>
-      </main>
-
-      <nav className="bottom-nav" aria-label="Main navigation">
-        <div className="bottom-nav-inner">
-          {navigation.map((item) => (
-            <button
-              key={item.id}
-              className={`bottom-nav-item ${page === item.id ? "active" : ""} ${item.id === "report" ? "nav-report" : ""}`}
-              aria-current={page === item.id ? "page" : undefined}
-              onClick={() => navigate(item.id)}
-            >
-              {item.id === "report" ? (
-                <span className="report-fab">
-                  <Icon name="send" size={27} />
-                  <span>Report</span>
-                </span>
-              ) : (
-                <>
-                  <span className="nav-icon">
-                    <Icon name={item.icon} size={24} />
-                    {item.id === "tracking" && trackingStarted && (
-                      <span className="nav-eta">
-                        {remaining ? `${Math.ceil(remaining / 60)}m` : "✓"}
-                      </span>
-                    )}
-                  </span>
-                  <span>{item.label}</span>
-                </>
-              )}
-            </button>
-          ))}
-        </div>
-      </nav>
-
-      {dialog && (
-        <div
-          className="modal-backdrop"
-          onClick={(event) => {
-            if (event.target === event.currentTarget) setDialog(null);
-          }}
-        >
-          <section
-            className="modal surface"
-            ref={dialogRef}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="dialog-heading"
-            tabIndex={-1}
-          >
-            <div className="modal-top">
-              <span className="shortcut-icon">
-                <Icon
-                  name={
-                    dialog === "privacy"
-                      ? "lock"
-                      : dialog === "tracking"
-                        ? "ambulance"
-                        : "file"
-                  }
-                  size={25}
-                />
-              </span>
-              <button
-                className="icon-button"
-                aria-label="Close dialog"
-                onClick={() => setDialog(null)}
-              >
-                <Icon name="cross" size={23} />
-              </button>
-            </div>
-            <h2 id="dialog-heading">
-              {dialog === "privacy"
-                ? "About this preview"
-                : dialog === "tracking"
-                  ? "Your demo response"
-                  : "Your latest report"}
-            </h2>
-            {dialog === "privacy" ? (
-              <>
-                <p>
-                  This is a frontend demo for emergency reporters. Reports,
-                  photos, audio, and chat messages are held in browser memory
-                  and reset when you refresh.
-                </p>
-                <p>
-                  Map locations and arrival times are simulated. The assistant
-                  uses preset replies. No real service is contacted.
-                </p>
-                <p className="modal-note">
-                  For a real emergency, contact your local emergency service
-                  directly.
-                </p>
-              </>
-            ) : dialog === "tracking" ? (
-              <>
-                <dl>
-                  <div>
-                    <dt>Service</dt>
-                    <dd>City Emergency Response</dd>
-                  </div>
-                  <div>
-                    <dt>Vehicle</dt>
-                    <dd>Ambulance · KA 03 AB 1248</dd>
-                  </div>
-                  <div>
-                    <dt>Arrival</dt>
-                    <dd>
-                      {remaining
-                        ? `${eta} min · live GPS`
-                        : "Arrived On Scene"}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Location</dt>
-                    <dd>100 Feet Road, Indiranagar, Bengaluru</dd>
-                  </div>
-                </dl>
-                <p className="modal-note">
-                  Emergency responder is connected to Teevra Dispatch Control via CAD telemetry.
-                </p>
-              </>
-            ) : report ? (
-              <>
-                <span className="small-badge">#{report.id}</span>
-                <p className="report-text">
-                  {report.description ||
-                    "Voice or image report. No written description."}
-                </p>
-                <dl>
-                  <div>
-                    <dt>Reporter</dt>
-                    <dd>{report.reporterName}</dd>
-                  </div>
-                  <div>
-                    <dt>Attachments</dt>
-                    <dd>
-                      {report.attachments.length} file
-                      {report.attachments.length === 1 ? "" : "s"}
-                    </dd>
-                  </div>
-                </dl>
-                {report.attachments.length > 0 && (
-                  <ul className="report-attachment-names">
-                    {report.attachments.map((file, i) => (
-                      <li key={i}>
-                        <Icon
-                          name={file.kind === "image" ? "image" : "mic"}
-                          size={16}
-                        />
-                        {file.name}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                <p className="modal-note">
-                  Saved locally. No service has been contacted.
-                </p>
-              </>
-            ) : (
-              <>
-                <p>
-                  You haven’t submitted a report yet. Start with a photo, a
-                  description, or a voice note.
-                </p>
-                <button
-                  className="primary-button red-button"
-                  onClick={() => {
-                    setDialog(null);
-                    navigate("report");
-                  }}
-                >
-                  Create a demo report
-                  <Icon name="arrow" size={20} />
-                </button>
-              </>
-            )}
-          </section>
-        </div>
-      )}
-    </div>
-  );
+          {!closed(report) && <div className="situation-updates"><button className="tracking-chat-link" aria-expanded={updateOpen} onClick={() => setUpdateOpen((v) => !v)}><span className="shortcut-icon"><Icon name="send" size={22} /></span><span><strong>Has anything changed?</strong><small>Send new details, a photo, or a voice note.</small></span><Icon name={updateOpen ? "minus" : "plus"} size={21} /></button>{updateOpen && <ReportForm active={page === "tracking" && updateOpen} isUpdate onSubmit={updateReport} reporterName={reporterName} />}</div>}
+          {!!report.updates?.length && <section className="surface reporter-update-history"><h2>Your situation updates</h2>{[...report.updates].reverse().map((u, index) => <div key={index}><small>{new Date(u.timestamp).toLocaleString()}</small><p>{u.description || "Media update"}</p><span>{u.attachments.length ? `${u.attachments.length} attachment(s)` : ""}</span></div>)}</section>}
+        </>}
+      </section>
+      <section hidden={page !== "chat"} className="screen chat-screen"><PageHeading eyebrow="YOU DON’T HAVE TO WAIT ALONE" title="A little support">Ask a question. We’re right here with you.</PageHeading><Assistant remaining={0} report={report} trackingStarted={false} onReportUpdate={report && !closed(report) ? updateReport : null} /></section>
+      <section hidden={page !== "profile"} className="screen profile-screen"><PageHeading eyebrow="YOUR REPORTER SPACE" title="Your profile">The details that keep everything connected.</PageHeading><section className="surface profile-card"><span className="large-avatar">{initials}</span><form className="name-form" onSubmit={(e) => { e.preventDefault(); sessionStorage.setItem("teevra.name", reporterName); setNotice("Your name is saved for this session."); }}><label htmlFor="reporter-name">Your name</label><input id="reporter-name" value={reporterName} onChange={(e) => setReporterName(e.target.value)} required maxLength={80} /><button className="primary-button blue-button">Save name</button></form>{notice && <p role="status">{notice}</p>}{report && <p>Latest report: {report.id}<br />Callback: {report.reporter_phone}</p>}</section></section>
+      <p className="demo-footnote">Prototype · Demo fleets are labelled; road ETAs exclude live traffic. For a real emergency, call your local emergency service.</p>
+    </main>
+    <nav className="bottom-nav" aria-label="Main navigation"><div className="bottom-nav-inner">{navigation.map((n) => <button key={n.id} className={`bottom-nav-item ${page === n.id ? "active" : ""} ${n.id === "report" ? "nav-report" : ""}`} aria-current={page === n.id ? "page" : undefined} onClick={() => navigate(n.id)}>{n.id === "report" ? <span className="report-fab"><Icon name="send" size={27} /><span>Report</span></span> : <><span className="nav-icon"><Icon name={n.icon} size={24} /></span><span>{n.label}</span></>}</button>)}</div></nav>
+  </div>;
 }

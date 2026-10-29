@@ -1,256 +1,113 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import L from "leaflet";
+import { api } from "../../lib/api";
 import "leaflet/dist/leaflet.css";
+import "./Map.css";
 
-export default function TacticalMap({
-  incident,
-  responders = [],
-  assignedResponder = null,
-  height = "260px",
-  interactive = true,
-}) {
-  const mapContainerRef = useRef(null);
-  const mapInstanceRef = useRef(null);
-  const markersLayerRef = useRef(null);
-
-  // Default coordinate if incident has none
-  const incidentLat = incident?.lat || 12.9716;
-  const incidentLng = incident?.lng || 77.6412;
+const EMPTY_FLEET = [];
+export default function TacticalMap({ incident, responders = EMPTY_FLEET, height = "300px", onLocationPick }) {
+  const container = useRef(null);
+  const mapRef = useRef(null);
+  const layerRef = useRef(null);
+  const viewKey = useRef("");
+  const [mapData, setMapData] = useState(null);
+  const [error, setError] = useState("");
+  const [tileError, setTileError] = useState(false);
+  const lat = incident?.lat;
+  const lng = incident?.lng;
+  const id = incident?.id;
+  const fleetKey = JSON.stringify(responders);
+  const unitIds = responders.map((u) => u.id).sort().join(",");
 
   useEffect(() => {
-    if (!mapContainerRef.current) return;
-
-    // Destroy existing map if any
-    if (mapInstanceRef.current) {
-      mapInstanceRef.current.remove();
-      mapInstanceRef.current = null;
-    }
-
-    // Initialize Leaflet map
-    const map = L.map(mapContainerRef.current, {
-      center: [incidentLat, incidentLng],
-      zoom: 14,
-      zoomControl: interactive,
-      dragging: interactive,
-      scrollWheelZoom: false,
-      attributionControl: false,
+    const map = L.map(container.current, { center: [12.9716, 77.5946], zoom: 12, scrollWheelZoom: false });
+    const tiles = L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>', maxZoom: 19,
+    }).addTo(map);
+    const streets = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>', maxZoom: 19,
     });
+    [tiles, streets].forEach((layer) => {
+      layer.on("tileerror", () => setTileError(true));
+      layer.on("tileload", () => setTileError(false));
+    });
+    L.control.layers({ "Light map": tiles, "Street map": streets }).addTo(map);
+    mapRef.current = map;
+    layerRef.current = L.layerGroup().addTo(map);
+    const observer = new ResizeObserver(() => map.invalidateSize());
+    observer.observe(container.current);
+    return () => { observer.disconnect(); map.remove(); mapRef.current = null; };
+  }, []);
 
-    // High-performance CartoDB Positron light tiles
-    L.tileLayer(
-      "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
-      {
-        maxZoom: 19,
-        subdomains: "abcd",
-      }
-    ).addTo(map);
-
-    const markersGroup = L.layerGroup().addTo(map);
-    markersLayerRef.current = markersGroup;
-    mapInstanceRef.current = map;
-
-    return () => {
-      if (mapInstanceRef.current) {
-        mapInstanceRef.current.remove();
-        mapInstanceRef.current = null;
-      }
-    };
-  }, [incidentLat, incidentLng, interactive]);
-
-  // Update markers, route polyline, and view when incident or responders change
   useEffect(() => {
-    const map = mapInstanceRef.current;
-    const markersGroup = markersLayerRef.current;
-    if (!map || !markersGroup) return;
+    const map = mapRef.current;
+    if (!map || !onLocationPick) return;
+    const choose = (event) => onLocationPick({ lat: event.latlng.lat, lng: event.latlng.lng });
+    map.on("click", choose);
+    return () => { map.off("click", choose); };
+  }, [onLocationPick]);
 
-    markersGroup.clearLayers();
-
-    // 1. Render Incident Scene Marker
-    const isP1 = incident?.priority === "P1";
-    const incidentPinColor = isP1 ? "#ed2546" : incident?.priority === "P2" ? "#d97706" : "#2563eb";
-
-    const incidentIcon = L.divIcon({
-      className: "custom-cad-marker",
-      html: `
-        <div style="position: relative; width: 44px; height: 44px; display: grid; place-items: center;">
-          <div style="position: absolute; width: 36px; height: 36px; border-radius: 50%; background: ${incidentPinColor}22; animation: ping 2s cubic-bezier(0, 0, 0.2, 1) infinite;"></div>
-          <div style="width: 28px; height: 28px; border-radius: 50%; background: ${incidentPinColor}; border: 3px solid #ffffff; box-shadow: 0 4px 12px ${incidentPinColor}66; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 13px; font-weight: 800;">
-            !
-          </div>
-          <div style="position: absolute; top: 38px; white-space: nowrap; background: #ffffff; color: #11234b; font-size: 10px; font-weight: 750; padding: 2px 8px; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.12); border: 1px solid #dce6f7;">
-            ${incident?.id || "SCENE"}
-          </div>
-        </div>
-      `,
-      iconSize: [44, 52],
-      iconAnchor: [22, 22],
-    });
-
-    const incidentMarker = L.marker([incidentLat, incidentLng], { icon: incidentIcon }).addTo(markersGroup);
-    incidentMarker.bindPopup(`
-      <div style="font-family: 'DM Sans', sans-serif; min-width: 180px;">
-        <strong style="color: ${incidentPinColor}; font-size: 12px;">${incident?.id || "Incident Scene"} (${incident?.priority || "P1"})</strong>
-        <p style="margin: 4px 0 0 0; font-size: 11px; color: #334155;">${incident?.location_name || "Emergency Location"}</p>
-        <span style="display: inline-block; margin-top: 4px; font-size: 10px; color: #64748b; text-transform: uppercase;">Status: ${incident?.status || "Pending"}</span>
-      </div>
-    `);
-
-    // 2. Render Responders
-    const bounds = L.latLngBounds([[incidentLat, incidentLng]]);
-
-    responders.forEach((unit) => {
-      // Determine unit coordinates based on unit id or default offsets
-      let uLat;
-      let uLng;
-
-      if (unit.id === "AMB-101") {
-        uLat = 12.9745;
-        uLng = 77.6450;
-      } else if (unit.id === "AMB-104") {
-        uLat = 12.9609;
-        uLng = 77.6387;
-      } else if (unit.id === "FIRE-202") {
-        uLat = 12.9815;
-        uLng = 77.6270;
-      } else if (unit.id === "POL-301") {
-        uLat = 12.9750;
-        uLng = 77.6405;
-      } else if (unit.id === "AMB-108") {
-        uLat = 12.9680;
-        uLng = 77.6430;
-      } else {
-        uLat = incidentLat + 0.005;
-        uLng = incidentLng + 0.005;
-      }
-
-      const isCurrentAssigned = assignedResponder?.id === unit.id || incident?.dispatch?.unit_id === unit.id;
-      const unitBg = isCurrentAssigned ? "#1765f4" : unit.status === "Available" ? "#16a34a" : "#64748b";
-      const unitSymbol = unit.type.includes("Ambulance") || unit.type.includes("Trauma") ? "🚑" : unit.type.includes("Fire") ? "🚒" : "🚓";
-
-      const unitIcon = L.divIcon({
-        className: "custom-cad-unit-marker",
-        html: `
-          <div style="position: relative; width: 36px; height: 36px; display: grid; place-items: center;">
-            <div style="width: 30px; height: 30px; border-radius: 50%; background: ${unitBg}; border: 2.5px solid #ffffff; box-shadow: 0 4px 10px rgba(0,0,0,0.18); display: flex; align-items: center; justify-content: center; font-size: 14px;">
-              ${unitSymbol}
-            </div>
-            <div style="position: absolute; top: 32px; white-space: nowrap; background: #ffffff; color: ${unitBg}; font-size: 9px; font-weight: 750; padding: 1px 6px; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.1); border: 1px solid #dce6f7;">
-              ${unit.name.split(" ")[0]}
-            </div>
-          </div>
-        `,
-        iconSize: [36, 44],
-        iconAnchor: [18, 18],
-      });
-
-      const uMarker = L.marker([uLat, uLng], { icon: unitIcon }).addTo(markersGroup);
-      uMarker.bindPopup(`
-        <div style="font-family: 'DM Sans', sans-serif; min-width: 170px;">
-          <strong style="color: ${unitBg}; font-size: 12px;">${unit.name}</strong>
-          <p style="margin: 2px 0 0 0; font-size: 11px; color: #475569;">${unit.type} · ${unit.status}</p>
-          <div style="margin-top: 6px; font-size: 10px; color: #64748b; line-height: 1.4;">
-            <div><strong>Base:</strong> ${unit.base_station}</div>
-            <div><strong>ETA:</strong> ${unit.eta_minutes} min (${unit.distance_km} km)</div>
-          </div>
-        </div>
-      `);
-
-      bounds.extend([uLat, uLng]);
-
-      // If this unit is assigned, draw high-visibility route polyline
-      if (isCurrentAssigned) {
-        // Waypoint to create realistic road geometry
-        const midLat = (incidentLat + uLat) / 2 + 0.001;
-        const midLng = (incidentLng + uLng) / 2 - 0.001;
-
-        const routeCoords = [
-          [uLat, uLng],
-          [midLat, midLng],
-          [incidentLat, incidentLng],
-        ];
-
-        // Route casing (darker border)
-        L.polyline(routeCoords, {
-          color: "#0d44b5",
-          weight: 6,
-          opacity: 0.8,
-          lineCap: "round",
-        }).addTo(markersGroup);
-
-        // Core bright blue route
-        L.polyline(routeCoords, {
-          color: "#1765f4",
-          weight: 4,
-          opacity: 1,
-          dashArray: "10 8",
-          lineCap: "round",
-        }).addTo(markersGroup);
-      }
-    });
-
-    // Fit map bounds smoothly
-    if (responders.length > 0) {
-      map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
-    } else {
-      map.setView([incidentLat, incidentLng], 14);
+  useEffect(() => {
+    if (!id || lat == null || lng == null) return;
+    let stopped = false;
+    let timer;
+    async function refresh() {
+      try {
+        const result = await api(`/api/incidents/${encodeURIComponent(id)}/map${unitIds ? `?unit_ids=${encodeURIComponent(unitIds)}` : ""}`);
+        if (!stopped) { setMapData(result); setError(""); }
+      } catch (failure) { if (!stopped) setError(failure.message); }
+      finally { if (!stopped) timer = setTimeout(refresh, 15000); }
     }
-  }, [incident, responders, assignedResponder, incidentLat, incidentLng]);
+    refresh();
+    return () => { stopped = true; clearTimeout(timer); };
+  }, [id, lat, lng, unitIds]);
 
-  return (
-    <div style={{ position: "relative", width: "100%", height: height, borderRadius: "14px", overflow: "hidden", border: "1px solid var(--line)" }}>
-      <div ref={mapContainerRef} style={{ width: "100%", height: "100%" }} />
+  const currentData = mapData?.incident_id === id ? mapData : null;
+  const dataKey = JSON.stringify(currentData);
+  useEffect(() => {
+    const map = mapRef.current;
+    const layer = layerRef.current;
+    if (!map || !layer) return;
+    layer.clearLayers();
+    if (lat == null || lng == null) return;
+    const data = JSON.parse(dataKey);
+    const units = data?.units || JSON.parse(fleetKey);
+    const bounds = L.latLngBounds([[lat, lng]]);
+    const scene = L.circleMarker([lat, lng], { radius: 10, color: "#fff", weight: 3, fillColor: "#ed2546", fillOpacity: 1 }).addTo(layer);
+    const label = document.createElement("span");
+    label.textContent = incident?.location_name || "Selected incident location";
+    scene.bindPopup(label);
+    if (incident?.location_accuracy_m) L.circle([lat, lng], { radius: incident.location_accuracy_m, weight: 1, color: "#ed2546", fillOpacity: .06 }).addTo(layer);
+    units.filter((u) => u.lat != null && u.lng != null).forEach((u) => {
+      const marker = L.circleMarker([u.lat, u.lng], { radius: 8, color: "#fff", weight: 2, fillColor: "#1765f4", fillOpacity: 1 }).addTo(layer);
+      const text = document.createElement("span");
+      text.textContent = `${u.name} · ${u.current_location}${u.location_source === "demo" ? " (demo location)" : ` · GPS updated ${new Date(u.location_updated_at).toLocaleTimeString()}`}`;
+      marker.bindPopup(text);
+      bounds.extend([u.lat, u.lng]);
+    });
+    (data?.routes || []).forEach((route) => {
+      const line = L.geoJSON(route.geometry, { style: { color: "#1765f4", weight: 5, opacity: .8 } }).addTo(layer);
+      const text = document.createElement("span");
+      text.textContent = `${route.unit_id}: ${route.eta_minutes} min · ${route.distance_km} km by road`;
+      line.bindPopup(text);
+      bounds.extend(line.getBounds());
+    });
+    const key = JSON.stringify([lat, lng, units.map((u) => [u.id, u.lat, u.lng]), (data?.routes || []).map((r) => r.geometry)]);
+    if (viewKey.current !== key) {
+      map.fitBounds(bounds, { padding: [35, 35], maxZoom: 15 });
+      viewKey.current = key;
+    }
+  }, [lat, lng, incident?.location_name, incident?.location_accuracy_m, fleetKey, dataKey]);
 
-      {/* High-visibility map telemetry badge */}
-      <div
-        style={{
-          position: "absolute",
-          top: "10px",
-          left: "10px",
-          zIndex: 1000,
-          background: "#fffffffa",
-          backdropFilter: "blur(8px)",
-          padding: "4px 10px",
-          borderRadius: "8px",
-          border: "1px solid #dce6f7",
-          boxShadow: "0 2px 8px rgba(18, 36, 77, 0.08)",
-          display: "flex",
-          alignItems: "center",
-          gap: "6px",
-          fontSize: "11px",
-          fontWeight: 700,
-          color: "#12244d",
-        }}
-      >
-        <span
-          style={{
-            width: "7px",
-            height: "7px",
-            borderRadius: "50%",
-            background: "#16a34a",
-            boxShadow: "0 0 6px #16a34a",
-          }}
-        />
-        <span>GIS Tactical Grid: Bengaluru Indiranagar Sector</span>
-      </div>
-
-      <div
-        style={{
-          position: "absolute",
-          bottom: "10px",
-          right: "10px",
-          zIndex: 1000,
-          background: "#fffffffa",
-          backdropFilter: "blur(8px)",
-          padding: "3px 8px",
-          borderRadius: "6px",
-          border: "1px solid #dce6f7",
-          fontSize: "10px",
-          fontWeight: 600,
-          color: "#64748b",
-        }}
-      >
-        CartoDB / OpenStreetMap
-      </div>
-    </div>
-  );
+  return <div className="real-map-shell">
+    <div ref={container} className="incident-map" style={{ height, width: "100%" }} aria-label={onLocationPick ? "Select incident location on the map" : "Incident and fleet street map"} />
+    <div className="real-map-caption"><span><i className="map-scene-dot" />Incident</span>{!onLocationPick && <span><i className="map-fleet-dot" />Fleet</span>}<button type="button" onClick={() => { if (lat != null && lng != null) { mapRef.current?.setView([lat, lng], 15); } }}>Recenter</button>{lat != null && lng != null && <a href={`https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=16/${lat}/${lng}`} target="_blank" rel="noreferrer">Open map ↗</a>}</div>
+    {onLocationPick && <p className="real-map-note">{lat == null ? "Tap the map to pin the incident. The initial view is Bengaluru." : "Tap elsewhere to move the incident pin."}</p>}
+    {!onLocationPick && lat == null && <p className="real-map-note">Incident coordinates haven’t been shared. This view is not a confirmed incident location.</p>}
+    {tileError && <p className="real-map-warning" role="status">Map tiles could not load. Check your connection or switch map layers.</p>}
+    {error && <p className="real-map-warning" role="status">Fleet updates unavailable. {error}</p>}
+    {currentData?.routes?.map((route) => <p key={route.unit_id} className="real-map-note">{currentData.units.find((u) => u.id === route.unit_id)?.name || route.unit_id}: {route.eta_minutes} min · {route.distance_km} km by road{currentData.units.find((u) => u.id === route.unit_id)?.location_source === "demo" ? " · Demo fleet position" : ""}</p>)}
+    {!!currentData?.routes?.length && <p className="real-map-note">Road estimates exclude live traffic. Fleet positions refresh every 15 seconds.</p>}
+    {currentData?.routing_unavailable && <p className="real-map-warning">Road routing unavailable for one or more fleets. Positions are shown without a route.</p>}
+  </div>;
 }

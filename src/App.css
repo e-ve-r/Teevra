@@ -1956,53 +1956,37 @@ h1 {
 }
 
 /* ================= DISPATCH PORTAL TOGGLE & TRIAGE BAR ================= */
-.portal-toggle-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  background: #ffffff;
-  color: var(--blue);
-  border: 1px solid #dce6f7;
-  border-radius: 20px;
-  padding: 6px 14px;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.3px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  box-shadow: 0 2px 8px rgba(23, 101, 244, 0.08);
-}
+/* Reporter contact capture and continuing incident updates. */
+.report-fields { margin: 0; padding: 0; min-width: 0; border: 0; }
+.report-contact-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-bottom: 28px; padding-bottom: 25px; border-bottom: 1px solid var(--line); }
+.report-contact-grid label { display: block; font-size: 13px; font-weight: 700; }
+.report-contact-grid input { display: block; width: 100%; border: 1px solid var(--line); background: #f8faff; border-radius: 11px; margin-top: 9px; padding: 13px; font-size: 13px; }
+.report-contact-grid small { display: block; font-size: 11px; line-height: 1.7; font-weight: 400; color: #8796af; margin-top: 8px; }
+.gps-detail { grid-column: 1/-1; color: #6e87ac; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 11px; }
+.gps-detail button { background: transparent; border: 0; font-size: 11px; text-decoration: underline; color: var(--blue); }
+.update-intro { font-size: 13px; color: #6c82a3; line-height: 1.8; margin-bottom: 24px; }
+.report-response-heading { padding: 28px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 15px; }
+.report-response-heading h2 { font: 800 25px Manrope, sans-serif; letter-spacing: -.8px; }
+.report-response-heading .eyebrow { margin-bottom: 7px; font-size: 11px; }
+.response-assignment-list { padding: 0 28px 25px; font-size: 13px; color: #6d83a3; }
+.response-assignment-list > div { display: flex; gap: 14px; align-items: center; padding: 12px 0; }
+.response-assignment-list strong { font-size: 14px; color: #244574; }
+.response-assignment-list p { margin-top: 5px; }
+.empty-report { padding: 45px; display: flex; flex-direction: column; align-items: center; gap: 20px; text-align: center; }
+.empty-report > svg { color: var(--blue); }
+.empty-report h2 { font-size: 23px; }
+.empty-report > p { color: var(--muted); line-height: 1.8; font-size: 14px; max-width: 420px; }
+.reporter-update-history { padding: 28px; margin-top: 25px; }
+.reporter-update-history h2 { font-size: 18px; margin-bottom: 15px; }
+.reporter-update-history > div { border-top: 1px solid var(--line); padding: 16px 0; }
+.reporter-update-history small, .reporter-update-history span { color: var(--muted); font-size: 11px; }
+.reporter-update-history p { margin-top: 8px; color: #5b7396; font-size: 13px; line-height: 1.8; }
+.existing-report-notice { padding: 20px; background: #edf4ff; border-radius: 14px; margin-bottom: 20px; font-size: 13px; color: #6683ad; line-height: 1.7; }
+.existing-report-notice button { margin-top: 14px; }
+.report-home-status { display: flex; align-items: center; gap: 12px; width: 100%; margin-top: 22px; padding: 18px 23px; font-size: 13px; }
+.report-home-status > span:last-of-type { margin-left: auto; color: #6f88af; }
+.chat-share-update { display: flex; align-items: center; gap: 9px; padding: 12px 22px; font-size: 11px; color: #6984ad; border-top: 1px solid var(--line); background: #f6f9ff; }
+.chat-share-update input { accent-color: var(--blue); }
+@media (max-width: 600px) { .report-contact-grid { grid-template-columns: 1fr; } .report-response-heading { padding: 22px; } .response-assignment-list { padding: 0 22px 22px; } .empty-report { padding: 28px; } }
 
-.portal-toggle-btn:hover {
-  background: #edf3ff;
-  border-color: #bcd5ff;
-  color: #0f4ec2;
-  transform: translateY(-1px);
-}
-
-.pulse-beacon {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #ef4444;
-  box-shadow: 0 0 8px #ef4444;
-  animation: pulse-ring 1.8s infinite;
-}
-
-.triage-status-bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  background: #f0fdf4;
-  border: 1px solid #bbf7d0;
-  color: #166534;
-  padding: 10px 14px;
-  border-radius: 10px;
-  font-size: 13px;
-  margin-top: 14px;
-}
-
-.triage-status-bar strong {
-  color: #14532d;
-}
-
+.report-map-picker { grid-column: 1 / -1; min-width: 0; }

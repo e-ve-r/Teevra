@@ -1,6 +1,6 @@
 """FastAPI bridge to OpenRouter and Teevra Department Dispatch System."""
 
-import shutil
+import asyncio
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -13,17 +13,21 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from Backend.models import (
-    DepartmentStats,
-    DispatchRequest,
-    Incident,
-    IncidentCreateRequest,
-    IncidentStatus,
-    ResponderUnit,
-    StatusUpdateRequest,
-)
-from Backend.store import store
-from Backend.triage import evaluate_incident_ai
+if __package__:
+    from .models import DepartmentStats, DispatchRequest, Incident, IncidentCreateRequest, IncidentUpdateRequest, IncidentStatus, ResponderUnit, ResponderLocationRequest, StatusUpdateRequest
+    from .database import close_db_connection
+    from .store import store
+    from .triage import evaluate_incident_ai
+    from .operations import recommendations
+    from .routing import RoadRouter
+else:
+    from models import DepartmentStats, DispatchRequest, Incident, IncidentCreateRequest, IncidentUpdateRequest, IncidentStatus, ResponderUnit, ResponderLocationRequest, StatusUpdateRequest
+    from database import close_db_connection
+    from store import store
+    from triage import evaluate_incident_ai
+    from operations import recommendations
+    from routing import RoadRouter
+
 
 
 class Settings(BaseSettings):
@@ -34,6 +38,7 @@ class Settings(BaseSettings):
     openrouter_model: str = Field(default="google/gemma-4-31b-it", min_length=1)
     openrouter_timeout_seconds: float = Field(default=45, gt=0, le=120)
     openrouter_max_tokens: int = Field(default=512, ge=1, le=2048)
+    routing_base_url: str = "https://router.project-osrm.org"
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
 
@@ -113,7 +118,7 @@ Condition-specific basics, only when relevant:
   or home remedies. Never promise a recovery or say it is safe to delay care.
 
 Explain app navigation when asked: Report accepts photos, text and voice notes;
-Live tracking shows a simulated route; Profile shows the latest report.
+Live tracking shows the saved incident location, assignment and response status; Profile shows the reporter name. Reporters can send additional text, images or voice notes on the same incident. Chat messages may be shared as incident updates when the reporter enables that option.
 This app is a prototype: dispatch, ambulance assignments, routes and ETAs are
 simulated. Never claim a real ambulance is coming based on app data or that a
 report called emergency services. Briefly clarify this when users rely on the
@@ -130,7 +135,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         async with httpx.AsyncClient(timeout=config.openrouter_timeout_seconds) as client:
             app.state.openrouter_client = client
-            yield
+            try:
+                yield
+            finally:
+                close_db_connection()
 
     app = FastAPI(title="Teevra Emergency & Dispatch API", version="0.2.0", lifespan=lifespan)
     app.add_middleware(
@@ -143,6 +151,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     uploads_dir = Path(__file__).resolve().parent.parent / "uploads"
     uploads_dir.mkdir(parents=True, exist_ok=True)
     app.mount("/uploads", StaticFiles(directory=str(uploads_dir)), name="uploads")
+
+    incident_locks = {}
+    road_router = RoadRouter(config.routing_base_url)
+
+    def incident_lock(incident_id):
+        return incident_locks.setdefault(incident_id, asyncio.Lock())
+
+    async def assess(incident, request):
+        history = incident.description + "\n" + "\n".join(
+            f"Update at {u.timestamp}: {u.description}" for u in incident.updates
+        )
+        triage = await evaluate_incident_ai(
+            description=history,
+            latest_description=incident.updates[-1].description if incident.updates else None,
+            attachments_count=len(incident.attachments),
+            attachments=incident.attachments,
+            client=getattr(request.app.state, "openrouter_client", None),
+            api_key=config.openrouter_api_key,
+            model=config.openrouter_model,
+        )
+        return triage
 
     # ------------------ Health & Status ------------------
     @app.get("/api/health")
@@ -216,6 +245,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         triage = await evaluate_incident_ai(
             description=payload.description,
             attachments_count=len(payload.attachments),
+            attachments=payload.attachments,
             client=client,
             api_key=config.openrouter_api_key,
             model=config.openrouter_model,
@@ -231,10 +261,62 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, f"Incident {incident_id} not found.")
         return incident
 
+    @app.post("/api/incidents/{incident_id}/updates", response_model=Incident)
+    async def update_situation(incident_id: str, payload: IncidentUpdateRequest, request: Request):
+        async with incident_lock(incident_id):
+            try:
+                incident = store.append_update(incident_id, payload)
+            except KeyError as err:
+                raise HTTPException(404, str(err))
+            except ValueError as err:
+                raise HTTPException(409, str(err))
+            triage = await assess(incident, request)
+            return store.update_triage(incident_id, triage, actor="Reporter update")
+
+    async def route_units(incident, units, request):
+        client = request.app.state.openrouter_client
+        return await asyncio.gather(*(road_router.route(client, unit, incident) for unit in units))
+
+    @app.get("/api/incidents/{incident_id}/map")
+    async def incident_map(incident_id: str, request: Request, unit_ids: Optional[str] = None):
+        incident = store.get_incident(incident_id)
+        if not incident:
+            raise HTTPException(404, "Incident not found")
+        requested = set(unit_ids.split(",")) if unit_ids else set()
+        units = [u for u in store.get_responders() if u.assigned_incident_id == incident_id or (u.id in requested and u.status == "Available" and not u.assigned_incident_id)]
+        routes = await route_units(incident, units, request)
+        return {"incident_id": incident_id, "units": units, "routes": [r for r in routes if r], "routing_unavailable": any(r is None for r in routes), "traffic_aware": False}
+
+    @app.get("/api/incidents/{incident_id}/recommendations")
+    async def recommended_fleet(incident_id: str, request: Request):
+        incident = store.get_incident(incident_id)
+        if not incident:
+            raise HTTPException(404, "Incident not found")
+        departments = recommendations(incident, store.get_responders())
+        units = [u for department in departments for u in department["units"]]
+        routes = await route_units(incident, units, request)
+        for unit, route in zip(units, routes):
+            if route:
+                unit.eta_minutes = route["eta_minutes"]
+                unit.distance_km = route["distance_km"]
+                unit.eta_basis = "road_route"
+        for department in departments:
+            department["units"].sort(key=lambda u: (u.eta_minutes is None, u.eta_minutes or 0, u.distance_km or 0, u.id))
+            department["eta_minutes"] = department["units"][0].eta_minutes if department["units"] else None
+        departments.sort(key=lambda d: (d["eta_minutes"] is None, d["eta_minutes"] or 0, d["department"]))
+        return {"incident_id": incident.id, "revision": incident.revision, "departments": departments, "eta_basis": "Road routing where available; otherwise approximate distance estimates. Excludes live traffic."}
+
     @app.post("/api/incidents/{incident_id}/dispatch", response_model=Incident)
     async def dispatch_incident(incident_id: str, payload: DispatchRequest):
         """Operator approves dispatch and assigns an emergency responder unit."""
         try:
+            if payload.eta_minutes is None:
+                target = store.get_incident(incident_id)
+                unit = next((u for u in store.get_responders() if u.id == payload.unit_id), None)
+                if target and unit:
+                    route = await road_router.route(app.state.openrouter_client, unit, target)
+                    if route:
+                        payload.eta_minutes = route["eta_minutes"]
             incident = store.dispatch_unit(
                 incident_id=incident_id,
                 unit_id=payload.unit_id,
@@ -245,6 +327,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return incident
         except KeyError as err:
             raise HTTPException(404, str(err))
+        except ValueError as err:
+            raise HTTPException(409, str(err))
 
     @app.patch("/api/incidents/{incident_id}/status", response_model=Incident)
     async def update_status(incident_id: str, payload: StatusUpdateRequest):
@@ -259,29 +343,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return incident
         except KeyError as err:
             raise HTTPException(404, str(err))
+        except ValueError as err:
+            raise HTTPException(409, str(err))
 
     @app.post("/api/incidents/{incident_id}/triage", response_model=Incident)
     async def reevaluate_triage(incident_id: str, request: Request):
         """Operator requests fresh AI re-evaluation of incident triage."""
-        incident = store.get_incident(incident_id)
-        if not incident:
-            raise HTTPException(404, f"Incident {incident_id} not found.")
-
-        client = getattr(request.app.state, "openrouter_client", None)
-        triage = await evaluate_incident_ai(
-            description=incident.description,
-            attachments_count=len(incident.attachments),
-            client=client,
-            api_key=config.openrouter_api_key,
-            model=config.openrouter_model,
-        )
-        updated = store.update_triage(incident_id, triage, actor="Operator Requested AI Triage")
-        return updated
+        async with incident_lock(incident_id):
+            incident = store.get_incident(incident_id)
+            if not incident:
+                raise HTTPException(404, f"Incident {incident_id} not found.")
+            triage = await assess(incident, request)
+            return store.update_triage(incident_id, triage, actor="Operator requested assessment")
 
     @app.get("/api/responders", response_model=List[ResponderUnit])
     async def list_responders():
         """Lists all emergency fleet units and their readiness."""
         return store.get_responders()
+
+    @app.patch("/api/responders/{unit_id}/location", response_model=ResponderUnit)
+    async def update_fleet_location(unit_id: str, payload: ResponderLocationRequest):
+        try:
+            return store.update_responder_location(unit_id, payload)
+        except KeyError as err:
+            raise HTTPException(404, str(err))
 
     @app.patch("/api/responders/{unit_id}/status", response_model=ResponderUnit)
     async def update_responder_status(unit_id: str, status: str = Query(..., description="New unit status")):
@@ -290,6 +375,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return store.update_responder_status(unit_id, status)
         except KeyError as err:
             raise HTTPException(404, str(err))
+        except ValueError as err:
+            raise HTTPException(409, str(err))
 
     @app.get("/api/department/stats", response_model=DepartmentStats)
     async def get_department_stats():
@@ -305,15 +392,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not ext:
             ext = ".jpg" if (file.content_type or "").startswith("image") else ".webm"
 
+        if ext not in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".wav", ".mp3", ".m4a", ".mp4", ".webm", ".ogg", ".flac", ".aac"}:
+            raise HTTPException(415, "Upload a supported image or audio file")
         file_id = f"ev-{uuid.uuid4().hex[:10]}"
         unique_name = f"{file_id}{ext}"
         destination = uploads_dir / unique_name
 
         try:
             with open(destination, "wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
+                total = 0
+                while chunk := await file.read(1024 * 1024):
+                    total += len(chunk)
+                    if total > 20 * 1024 * 1024:
+                        raise HTTPException(413, "Each attachment must be 20 MB or smaller")
+                    buffer.write(chunk)
+        except HTTPException:
+            destination.unlink(missing_ok=True)
+            raise
         except Exception as err:
-            raise HTTPException(500, f"Failed to save evidence file: {err}")
+            destination.unlink(missing_ok=True)
+            raise HTTPException(500, "Failed to save evidence file") from err
 
         is_img = (file.content_type or "").startswith("image") or ext in (".jpg", ".jpeg", ".png", ".webp")
         return {

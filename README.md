@@ -1,116 +1,53 @@
 # Teevra
 
-**A mobile-first emergency reporting frontend.**
+AI assisted emergency reporting and response coordination, with separate reporter and responder dashboards. This is a prototype; it does not contact real emergency services.
 
-Teevra gives the person reporting an emergency a simple place to share photos, describe an incident, record a voice note, and follow the arrival of help. The interface uses blue and red, large headings, and a persistent bottom navigation bar with a central Report button.
-
-The broader project aims to support AI-assisted emergency triage and response coordination, with a human operator approving dispatch decisions. This repository contains the reporter frontend and a FastAPI backend for OpenRouter chat.
-
-> **Demo status:** No real emergency service is contacted. Map locations, response assignments, distances, and ETAs are simulated. The chatbot uses OpenRouter when the backend is configured.
-
-## Features
-
-| Screen | Current functionality |
-| --- | --- |
-| Home | A prominent emergency-report action and shortcuts to tracking and chat. |
-| Report | Camera/gallery image selection, a description of up to 500 characters, local microphone recording, and audio-file uploads. Attachments can be previewed and removed. |
-| Live tracking | A six-minute simulated response, moving ambulance marker, countdown, distance, arrival status, and map zoom/recenter controls. A compact ETA also appears in the bottom navigation. |
-| AI chat | OpenRouter model replies through FastAPI, recent conversation history, simulated tracking context, and retry on errors. |
-| Profile | An editable demo name and a summary of the latest report submitted in the current session. |
-
-A report requires a description or at least one attachment. Each file must be smaller than 20 MB. Submitting a report opens tracking and restarts the simulated response.
-
-## Tech stack
-
-- React 19 for the interface and session state.
-- Vite 8 for development and production builds.
-- Plain CSS for responsive layouts and styling.
-- Browser `MediaRecorder` and File APIs for local audio and attachments.
-- Lucide React for icons and SVG for the illustrative map.
-- FastAPI, HTTPX, and OpenRouter for chat.
-- ESLint for code checks.
-
-## Getting started
-
-### Requirements
-
-- Node.js 20.19+ or 22.12+ and npm. A supported current Node.js LTS release is recommended.
-- A browser with microphone support for voice reporting.
-
-### Install and run
+## Run locally
 
 ```sh
-git clone https://github.com/e-ve-r/Teevra.git
-cd Teevra
 npm ci
-npm run dev
+python3 -m venv Backend/.venv
+Backend/.venv/bin/python -m pip install -r Backend/requirements.txt
+Backend/.venv/bin/python -m uvicorn Backend.main:app --reload --reload-dir Backend --reload-exclude '**/.venv/**' --host 127.0.0.1 --port 8000
 ```
 
-Open the local URL printed by Vite, normally `http://localhost:5173`.
+In another terminal, run `npm run dev`.
 
-The frontend works without API keys, but AI replies require the backend and a server-side OpenRouter token. Follow [Backend setup](Backend/README.md) to configure and run it. Vite forwards `/api` requests to `http://127.0.0.1:8000`; restart Vite after changing its configuration. A database is not required.
+- Reporter: `http://localhost:5173/`
+- Responder: `http://localhost:5173/responder` (`/dispatch` is an alias)
 
-Microphone recording requires permission and a supported browser running on localhost or HTTPS. On supported mobile devices, Open camera opens the native camera picker. Other devices may show a file picker.
+There are no links or role switches between the two dashboards. These routes separate the interfaces; they do not implement authentication or role based API authorization.
 
-### Available commands
+The backend stores reports, updates, fleet assignments and uploaded media locally. It starts with sample incidents and fleet locations. Configure `Backend/.env` for model inference; see [backend configuration](Backend/README.md). Without a working provider, triage uses an explicitly labelled rules fallback requiring operator review. Chat reports an error if inference is unavailable.
 
-| Command | Purpose |
-| --- | --- |
-| `npm run dev` | Start the Vite development server. |
-| `npm run build` | Create the production build in `dist/`. |
-| `npm run preview` | Serve the production build locally. |
-| `npm run lint` | Run ESLint. |
+## Reporting
 
-## Project structure
+Reports accept text, photos and recorded or uploaded audio. A callback mobile number is required. Browsers do not expose the phone's mobile number, so the reporter enters it. GPS capture requires browser permission on localhost or HTTPS; coordinates are refreshed on submission and include accuracy. If GPS is denied or unavailable, an incident address can be entered without fabricating coordinates.
 
-```text
-Teevra/
-├── Backend/                   # FastAPI chat API, configuration, and tests
-├── public/                    # Static assets and favicon
-├── src/
-│   ├── components/
-│   │   ├── Assistant.jsx      # Chat UI and backend requests
-│   │   ├── Attachments.jsx    # Report form, file uploads, voice recording
-│   │   ├── Icon.jsx           # Shared Lucide React icons
-│   │   └── LiveMap.jsx        # Illustrative map and moving vehicle
-│   ├── App.jsx                # Screens, navigation, report state, ETA timer
-│   ├── App.css                # Component styles and responsive layouts
-│   ├── index.css              # Global styles and design tokens
-│   └── main.jsx               # React entry point
-├── index.html
-├── vite.config.js
-├── eslint.config.js
-├── package.json
-└── package-lock.json
+After submitting, the reporter follows saved assignment/status information and can add more text, photos or voice notes to the same incident. Chat messages can also become incident updates through the visible sharing checkbox. Each update is saved, re-evaluated against the full timestamped history, and reflected on the responder dashboard through three second polling. The incident's original report time is preserved. The report ID and reporter name survive refresh within the browser session; reports and media remain in backend storage.
+
+## Response workspace
+
+Stats appear in the main workspace. The queue orders open incidents by priority band, severity and time waiting; closed incidents appear separately. The score is `priority band + severity × 0.7 + min(waiting minutes, 120) × 0.25`, with priority bands of 200 / 100 / 0 for P1 / P2 / P3. Older reports win equal scores. Aging cannot let standard incidents displace critical ones.
+
+Incidents show a top status label, caller details, assessment, situation updates and location. Fleet selection appears when assigning, grouped by the suggested departments. A single incident can receive fleets from multiple departments. Assigned or unavailable fleets are excluded from suggestions and duplicate assignments are rejected by the API. Closing an incident releases all its assigned units.
+
+Departments and available fleets are sorted by estimated arrival time, then distance. ETAs use stored fleet coordinates, a 1.3 road-distance factor, a 30 km/h speed assumption and two minutes for mobilisation. They do not include live traffic. Missing coordinates show an unknown ETA and require operator confirmation. Demo fleet positions are labelled; a location-update endpoint supports actual telemetry integration.
+
+Worsening reports can increase priority and change recommendations. Reassessment replaces the previous score; explicit reported improvement can lower the score, and rules assessments require operator review. The model considers report text and local uploaded image/audio bytes; unsupported media or provider failures use the rules fallback and remain available to the operator.
+
+## Validation
+
+```sh
+npm run lint
+npm run build
+Backend/.venv/bin/python -m unittest discover -s Backend/tests -v
 ```
 
-## Data and demo limitations
+Regression coverage includes callback/location validation, unknown GPS, escalation and history, severity/age ordering, telemetry based recommendations, legacy fleet reconciliation, multi-department assignments, assignment conflicts, release on resolution, durable uploads and multimodal provider payloads. Provider tests use mocks.
 
-- Reports, attachments, profile changes, and chat messages live in browser memory and reset on refresh.
-- Files are previewed with local object URLs. There is no upload endpoint or persistent storage.
-- Voice reporting records audio locally. Speech-to-text is not connected.
-- The destination and ambulance route are illustrative. The app does not obtain GPS coordinates or use a live map provider.
-- Chat messages and a minimal summary (tracking state, simulated ETA, report presence, and attachment count) are sent through FastAPI to OpenRouter and its inference provider. Report text, media, and reporter names are not automatically included. Do not enter sensitive personal data in chat.
-- AI replies can be incorrect; the assistant cannot contact emergency services or dispatch responders.
-- Authentication, real notifications, dispatch, and responder communication are not implemented.
-- The stylesheet requests Google Fonts, with system fonts as fallbacks.
+## Implementation
 
-For an actual emergency, contact your local emergency service directly.
+React, Vite, Leaflet, plain CSS, FastAPI, SQLite and OpenRouter. Vite proxies both `/api` and `/uploads` to port 8000. For separate hosting, set `VITE_API_BASE_URL`, configure backend CORS, and route both paths to the backend. Production hosting must serve the frontend entry point for `/responder` and `/dispatch`.
 
-## Planned integrations
-
-The project presentation describes the following future work. These capabilities are not implemented in this frontend:
-
-- Backend endpoints for incident intake, users, dispatch, and monitoring (only chat and health are implemented).
-- Speech-to-text, image analysis, and AI-assisted incident and severity assessment.
-- Resource recommendations and responder ranking by traffic-aware ETA.
-- An operator dashboard for reviewing recommendations and approving dispatch.
-- Live GPS and mapping, with WebSocket updates for response progress.
-- PostgreSQL for persistent records and Redis for live state and ETA caching.
-- Monitoring of response delays, with escalation recommendations for operator review.
-
-## Development notes
-
-Keep generated builds, dependencies, environment files, credentials, and local uploaded media out of Git. The included `.gitignore` covers these files. Commit `package-lock.json` so contributors can install the same dependency versions with `npm ci`.
-
-The current Vite configuration includes a development tunnel hostname in `server.allowedHosts`. Adjust that entry if you use a different tunnel. This setting is only for the development server.
+The app is not connected to emergency dispatch networks, fleet GPS feeds or traffic routing. Authentication and role authorization remain integration work. Uploaded media and report text are sent to OpenRouter and its selected inference provider for assessment when configured. Map tiles use CARTO / OpenStreetMap. Do not commit environment files, the SQLite database, uploaded media or generated builds.

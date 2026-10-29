@@ -26,6 +26,13 @@ def get_db_connection() -> sqlite3.Connection:
     return _local.connection
 
 
+def close_db_connection():
+    connection = getattr(_local, "connection", None)
+    if connection is not None:
+        connection.close()
+        _local.connection = None
+
+
 def init_database():
     """Create tables if not already present, and seed initial incidents if empty."""
     conn = get_db_connection()
@@ -88,6 +95,43 @@ def init_database():
         count = cursor.fetchone()[0]
         if count == 0:
             _seed_incidents(conn)
+
+        # Additive migration preserves existing incident and fleet records.
+        migrations = {
+            "incidents": {
+                "coordinates_known": "INTEGER NOT NULL DEFAULT 1",
+                "location_accuracy_m": "REAL",
+                "updates_json": "TEXT NOT NULL DEFAULT '[]'",
+                "dispatches_json": "TEXT NOT NULL DEFAULT '[]'",
+                "revision": "INTEGER NOT NULL DEFAULT 0",
+            },
+            "responders": {
+                "lat": "REAL", "lng": "REAL", "location_updated_at": "TEXT",
+                "location_source": "TEXT NOT NULL DEFAULT 'demo'",
+            },
+        }
+        for table, columns in migrations.items():
+            existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            for name, definition in columns.items():
+                if name not in existing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+        demo_positions = {
+            "AMB-101": (12.9745, 77.6450), "AMB-104": (12.9609, 77.6387),
+            "FIRE-202": (12.9815, 77.6270), "POL-301": (12.9750, 77.6405),
+            "AMB-108": (12.9680, 77.6430),
+        }
+        for unit_id, (lat, lng) in demo_positions.items():
+            conn.execute("UPDATE responders SET lat = ?, lng = ? WHERE id = ? AND lat IS NULL AND location_source = 'demo'", (lat, lng, unit_id))
+        # Older versions stored dispatches without updating fleet readiness.
+        # Reconcile those assignments before exposing available vehicles.
+        for row in conn.execute("SELECT id, status, dispatch_json, dispatches_json FROM incidents WHERE status NOT IN ('resolved', 'cancelled') ORDER BY created_at DESC"):
+            dispatches = json.loads(row["dispatches_json"] or "[]")
+            if not dispatches and row["dispatch_json"]:
+                dispatches = [json.loads(row["dispatch_json"])]
+            for dispatch in dispatches:
+                conn.execute("UPDATE responders SET status = ?, assigned_incident_id = ? WHERE id = ? AND assigned_incident_id IS NULL AND status != 'Off Duty'", (
+                    row["status"].replace("_", " ").title(), row["id"], dispatch["unit_id"],
+                ))
 
 
 def _seed_responders(conn: sqlite3.Connection):

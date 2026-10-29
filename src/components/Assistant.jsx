@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import Icon from "./Icon";
 
-export default function Assistant({ remaining, report, trackingStarted }) {
+export default function Assistant({ remaining, report, trackingStarted, onReportUpdate }) {
   const [messages, setMessages] = useState([
     {
       id: "welcome",
@@ -9,6 +9,7 @@ export default function Assistant({ remaining, report, trackingStarted }) {
       text: "Hi, I’m Teevra Assist. I can share basic first-aid steps while you wait for professional help, or help you use the app. For an emergency, call your local emergency service directly—this app cannot dispatch help. What happened?",
     },
   ]);
+  const [shareUpdates, setShareUpdates] = useState(true);
   const [draft, setDraft] = useState("");
   const [typing, setTyping] = useState(false);
   const [error, setError] = useState("");
@@ -72,7 +73,7 @@ export default function Assistant({ remaining, report, trackingStarted }) {
     }
   }
 
-  function sendMessage(event, suggestion) {
+  async function sendMessage(event, suggestion) {
     event?.preventDefault();
     const text = (suggestion || draft).trim();
     if (!text || typing) return;
@@ -80,6 +81,18 @@ export default function Assistant({ remaining, report, trackingStarted }) {
       ...messages,
       { id: crypto.randomUUID(), from: "user", text },
     ];
+    if (onReportUpdate && shareUpdates) {
+      setTyping(true);
+      setError("");
+      try {
+        await onReportUpdate({ description: text });
+      } catch (failure) {
+        setError(`Your incident update was not saved: ${failure.message}`);
+        setTyping(false);
+        return;
+      }
+      setTyping(false);
+    }
     setMessages(conversation);
     setDraft("");
     requestReply(conversation);
@@ -138,11 +151,12 @@ export default function Assistant({ remaining, report, trackingStarted }) {
       {error && (
         <div className="chat-error" role="alert">
           <p>{error}</p>
-          <button type="button" disabled={typing} onClick={() => requestReply(failedMessages)}>
+          {failedMessages && <button type="button" disabled={typing} onClick={() => failedMessages && requestReply(failedMessages)}>
             Retry
-          </button>
+          </button>}
         </div>
       )}
+      {onReportUpdate && <label className="chat-share-update"><input type="checkbox" checked={shareUpdates} onChange={(e) => setShareUpdates(e.target.checked)} />Share my messages as updates to report {report.id}</label>}
       <form className="chat-composer" onSubmit={sendMessage}>
         <label className="sr-only" htmlFor="chat-input">
           Message Teevra Assist

@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 from enum import Enum
 from typing import List, Optional
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class IncidentPriority(str, Enum):
@@ -47,6 +47,9 @@ class TriageAssessment(BaseModel):
     category: IncidentCategory
     summary: str
     recommended_service: str
+    recommended_departments: List[str] = Field(default_factory=list)
+    source: str = "ai"
+    review_required: bool = False
     potential_hazards: List[str] = Field(default_factory=list)
     recommended_actions: List[str] = Field(default_factory=list)
     ai_confidence: float = Field(default=0.92, ge=0.0, le=1.0)
@@ -86,22 +89,66 @@ class ResponderUnit(BaseModel):
     status: str  # "Available", "Dispatched", "En Route", "On Scene", "Off Duty"
     base_station: str
     current_location: str
-    eta_minutes: int
-    distance_km: float
+    eta_minutes: Optional[int] = None
+    distance_km: Optional[float] = None
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    location_updated_at: Optional[str] = None
+    location_source: str = "demo"
+    eta_basis: str = "approximate"
+    department: str = "Medical"
     crew: List[str]
     assigned_incident_id: Optional[str] = None
 
 
 class IncidentCreateRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    reporter_name: str = "Alex Kumar"
-    reporter_phone: Optional[str] = "+91 98765 43210"
-    location_name: Optional[str] = "Connaught Place, Inner Circle"
-    lat: Optional[float] = 28.6315
-    lng: Optional[float] = 77.2167
+    reporter_name: str = Field(default="Reporter", min_length=1, max_length=80)
+    reporter_phone: str = Field(pattern=r"^\+?[\d\s()-]{7,22}$")
+    location_name: str = Field(min_length=1, max_length=300)
+    lat: Optional[float] = Field(default=None, ge=-90, le=90)
+    lng: Optional[float] = Field(default=None, ge=-180, le=180)
+    location_accuracy_m: Optional[float] = Field(default=None, ge=0)
     description: str = Field(min_length=1, max_length=2000)
     attachments: List[Attachment] = Field(default_factory=list)
     category: Optional[IncidentCategory] = None
+
+    @model_validator(mode="after")
+    def coordinate_pair(self):
+        if (self.lat is None) != (self.lng is None):
+            raise ValueError("Latitude and longitude must be supplied together")
+        if not 7 <= sum(c.isdigit() for c in self.reporter_phone) <= 15:
+            raise ValueError("Enter a valid mobile number including country code")
+        return self
+
+
+class IncidentUpdateRequest(BaseModel):
+    description: str = Field(default="", max_length=2000)
+    attachments: List[Attachment] = Field(default_factory=list, max_length=10)
+    lat: Optional[float] = Field(default=None, ge=-90, le=90)
+    lng: Optional[float] = Field(default=None, ge=-180, le=180)
+    location_name: Optional[str] = Field(default=None, max_length=300)
+    location_accuracy_m: Optional[float] = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def valid_update(self):
+        if not self.description.strip() and not self.attachments:
+            raise ValueError("Describe the change or attach media")
+        if (self.lat is None) != (self.lng is None):
+            raise ValueError("Latitude and longitude must be supplied together")
+        return self
+
+
+class IncidentUpdate(BaseModel):
+    timestamp: str
+    description: str
+    attachments: List[Attachment] = Field(default_factory=list)
+
+
+class ResponderLocationRequest(BaseModel):
+    lat: float = Field(ge=-90, le=90)
+    lng: float = Field(ge=-180, le=180)
+    current_location: str = Field(min_length=1, max_length=300)
 
 
 class Incident(BaseModel):
@@ -110,8 +157,9 @@ class Incident(BaseModel):
     reporter_name: str
     reporter_phone: str
     location_name: str
-    lat: float
-    lng: float
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    location_accuracy_m: Optional[float] = None
     description: str
     category: IncidentCategory
     priority: IncidentPriority
@@ -120,6 +168,11 @@ class Incident(BaseModel):
     attachments: List[Attachment] = Field(default_factory=list)
     triage: Optional[TriageAssessment] = None
     dispatch: Optional[DispatchDetails] = None
+    dispatches: List[DispatchDetails] = Field(default_factory=list)
+    updates: List[IncidentUpdate] = Field(default_factory=list)
+    revision: int = 0
+    queue_score: float = 0
+    assessment_pending: bool = False
     timeline: List[TimelineEvent] = Field(default_factory=list)
 
 
@@ -128,7 +181,7 @@ class DispatchRequest(BaseModel):
     unit_id: str
     operator_name: str = "Dispatcher 04"
     operator_notes: Optional[str] = None
-    eta_minutes: Optional[int] = None
+    eta_minutes: Optional[int] = Field(default=None, ge=1, le=1440)
 
 
 class StatusUpdateRequest(BaseModel):
