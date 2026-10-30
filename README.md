@@ -32,7 +32,7 @@ Stats appear in the main workspace. The queue orders open incidents by priority 
 
 Incidents show a top status label, caller details, assessment, situation updates and location. Fleet selection appears when assigning, grouped by the suggested departments. A single incident can receive fleets from multiple departments. Assigned or unavailable fleets are excluded from suggestions and duplicate assignments are rejected by the API. Closing an incident releases all its assigned units.
 
-Departments and available fleets are sorted by estimated arrival time, then distance. ETAs use stored fleet coordinates, a 1.3 road-distance factor, a 30 km/h speed assumption and two minutes for mobilisation. They do not include live traffic. Missing coordinates show an unknown ETA and require operator confirmation. Demo fleet positions are labelled; a location-update endpoint supports actual telemetry integration.
+Departments and available fleets are sorted by estimated arrival time, then distance. ETAs use OSRM road routes from the stored fleet coordinates to the reported incident. When road routing is unavailable, clearly labelled approximate estimates use a 1.3 distance factor, 30 km/h and two minutes for mobilisation. Neither includes live traffic. Missing coordinates show an unknown ETA and require operator confirmation. Demo fleet positions are labelled; a location-update endpoint supports actual telemetry integration.
 
 Worsening reports can increase priority and change recommendations. Reassessment replaces the previous score; explicit reported improvement can lower the score, and rules assessments require operator review. The model considers report text and local uploaded image/audio bytes; unsupported media or provider failures use the rules fallback and remain available to the operator.
 
@@ -50,4 +50,14 @@ Regression coverage includes callback/location validation, unknown GPS, escalati
 
 React, Vite, Leaflet, plain CSS, FastAPI, SQLite and OpenRouter. Vite proxies both `/api` and `/uploads` to port 8000. For separate hosting, set `VITE_API_BASE_URL`, configure backend CORS, and route both paths to the backend. Production hosting must serve the frontend entry point for `/responder` and `/dispatch`.
 
-The app is not connected to emergency dispatch networks, fleet GPS feeds or traffic routing. Authentication and role authorization remain integration work. Uploaded media and report text are sent to OpenRouter and its selected inference provider for assessment when configured. Map tiles use CARTO / OpenStreetMap. Do not commit environment files, the SQLite database, uploaded media or generated builds.
+The app is not connected to emergency dispatch networks or live traffic. Responders can share device GPS for a selected fleet. Authentication and role authorization remain integration work. Uploaded media and report text are sent to OpenRouter and its selected inference provider for assessment when configured. Map tiles use OpenStreetMap. Do not commit environment files, the SQLite database, uploaded media or generated builds.
+
+## Real maps and fleet-to-reporter ETA
+
+Both dashboards show real OpenStreetMap street tiles, the reported incident pin, assigned fleet positions and OSRM road routes from each fleet to the incident. The reporter’s main ETA and responder assignment label use the current road ETA. Maps poll fleet positions every 15 seconds; the reporter response summary refreshes every three seconds. No simulated movement is generated.
+
+On the responder dashboard, choose the correct fleet under **Fleet location**, then select **Share fleet GPS** from that fleet’s device and grant browser location permission. New GPS positions are uploaded at most once every ten seconds and recalculate routes. Stopping sharing retains the last known position and its timestamp. Until GPS is shared, existing seeded fleet coordinates remain labelled as demo positions. The reporter can use GPS or tap the real map to choose the incident pin.
+
+Set server-side `ROUTING_BASE_URL` to a compatible OSRM deployment; the default is `https://router.project-osrm.org`. Routes are cached for five minutes per exact coordinate pair and invalidated by movement; failures are cached for 30 seconds. Road ETA is route driving duration, without live traffic or mobilisation time. If routing fails, maps show positions without invented routes and fleet recommendations explicitly label approximate estimates. Unknown coordinates require a confirmed ETA.
+
+The default public OSRM and OpenStreetMap services are suitable for local prototype validation, not a guaranteed emergency-service dependency. Configure a production routing/tile service for deployment and follow the [OpenStreetMap tile policy](https://operations.osmfoundation.org/policies/tiles/). Routing sends fleet/incident coordinates to the configured server; map tiles request the displayed geographic area.

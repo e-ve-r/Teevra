@@ -1,17 +1,94 @@
-.real-map-shell { border: 1px solid var(--line); border-radius: 15px; overflow: hidden; background: #fff; }
-.real-map-shell .incident-map { z-index: 0; }
-.real-map-caption { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; padding: 11px 14px; font-size: 11px; color: #6b7e9a; }
-.real-map-caption > span { display: inline-flex; align-items: center; gap: 6px; }
-.real-map-caption i { width: 8px; height: 8px; border-radius: 50%; }
-.map-scene-dot { background: var(--red); }
-.map-fleet-dot { background: var(--blue); }
-.real-map-caption button { margin-left: auto; border: 0; background: #edf4ff; color: var(--blue); padding: 5px 8px; border-radius: 6px; font-size: 11px; }
-.real-map-caption a { color: var(--blue); }
-.real-map-note, .real-map-warning { padding: 0 14px 10px; font-size: 11px; line-height: 1.6; color: #7e8fa7; }
-.real-map-warning { color: #a07723; }
-.fleet-gps-control { display: flex; flex-wrap: wrap; align-items: center; gap: 15px; background: #fff; border: 1px solid var(--line); border-radius: 15px; padding: 16px 20px; margin-bottom: 20px; }
-.fleet-gps-control > div { flex: 1; min-width: 180px; }
-.fleet-gps-control strong { font-size: 13px; }
-.fleet-gps-control p { font-size: 11px; color: #7e8fa7; margin-top: 5px; line-height: 1.6; }
-.fleet-gps-control select { max-width: 230px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: #f7faff; color: #506e98; font: inherit; font-size: 12px; }
-.fleet-gps-control .fleet-gps-message { flex-basis: 100%; margin-top: 0; }
+.real-map-shell {
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  overflow: hidden;
+  background: #fff;
+}
+.real-map-shell .incident-map {
+  z-index: 0;
+}
+.real-map-caption {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding: 11px 14px;
+  font-size: 11px;
+  color: #6b7e9a;
+}
+.real-map-caption > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.real-map-caption i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.map-scene-dot {
+  background: var(--red);
+}
+.map-fleet-dot {
+  background: var(--blue);
+}
+.real-map-caption button {
+  margin-left: auto;
+  border: 0;
+  background: #edf4ff;
+  color: var(--blue);
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+}
+.real-map-caption a {
+  color: var(--blue);
+}
+.real-map-note,
+.real-map-warning {
+  padding: 0 14px 10px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: #7e8fa7;
+}
+.real-map-warning {
+  color: #a07723;
+}
+.fleet-gps-control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 15px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  padding: 16px 20px;
+  margin-bottom: 20px;
+}
+.fleet-gps-control > div {
+  flex: 1;
+  min-width: 180px;
+}
+.fleet-gps-control strong {
+  font-size: 13px;
+}
+.fleet-gps-control p {
+  font-size: 11px;
+  color: #7e8fa7;
+  margin-top: 5px;
+  line-height: 1.6;
+}
+.fleet-gps-control select {
+  max-width: 230px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f7faff;
+  color: #506e98;
+  font: inherit;
+  font-size: 12px;
+}
+.fleet-gps-control .fleet-gps-message {
+  flex-basis: 100%;
+  margin-top: 0;
+}

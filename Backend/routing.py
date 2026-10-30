@@ -40,7 +40,7 @@ class RoadRouter:
                         if len(point) < 2 or not (-180 <= point[0] <= 180 and -90 <= point[1] <= 90):
                             raise ValueError('Invalid route coordinates')
                     result = {'unit_id': unit.id, 'geometry': geometry, 'distance_km': round(distance / 1000, 1), 'eta_minutes': max(1, ceil(duration / 60)), 'basis': 'road_route', 'traffic_aware': False}
-            except (Exception,):
+            except Exception:
                 # A routing outage must not prevent incident intake or dispatch.
                 result = None
             if len(self.cache) > 500:
