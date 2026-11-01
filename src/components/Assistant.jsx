@@ -2,268 +2,209 @@ import { useEffect, useRef, useState } from "react";
 import Icon from "./Icon";
 import useTextToSpeech from "../hooks/useTextToSpeech";
 import useVoiceRecording from "../hooks/useVoiceRecording";
+import ReportReview from "./ReportReview";
+import { mediaUrl, uploadAttachments } from "../lib/api";
+import { compressImage } from "../lib/compressImage";
+import { loadChatHistory, saveChatHistory } from "../lib/chatHistory";
 
-export default function Assistant({ active = true, remaining, report, trackingStarted, onReportUpdate }) {
-  const speech = useTextToSpeech(active);
-  const [speechRate, setSpeechRate] = useState(1);
-  const [replyLanguage, setReplyLanguage] = useState("auto");
-  const [speakReplies, setSpeakReplies] = useState(true);
-  const [messages, setMessages] = useState([
-    {
-      id: "welcome",
-      from: "assistant",
-      text: "Hi, I’m Teevra Assist. I can share basic first-aid steps while you wait for professional help, or help you use the app. For an emergency, call your local emergency service directly—this app cannot dispatch help. What happened?",
-    },
-  ]);
-  const [shareUpdates, setShareUpdates] = useState(false);
+export default function Assistant({ active = true, report, incidentId, reporterName, reporterPhone, onSubmitReport, onTrack }) {
+  const [messages, setMessages] = useState(() => loadChatHistory(localStorage));
+  const messagesRef = useRef(messages);
+  const [storageError, setStorageError] = useState("");
   const [draft, setDraft] = useState("");
-  const voice = useVoiceRecording(active, (text) => {
-    setDraft((current) => [current.trim(), text].filter(Boolean).join(" "));
-  });
+  const [image, setImage] = useState(null);
+  const [preparingImage, setPreparingImage] = useState(false);
   const [typing, setTyping] = useState(false);
   const [error, setError] = useState("");
   const [failedMessages, setFailedMessages] = useState(null);
-  const requestController = useRef(null);
-  const messageList = useRef(null);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [recommended, setRecommended] = useState(false);
+  const [voiceMode, setVoiceMode] = useState(false);
+  const [voiceLanguage, setVoiceLanguage] = useState(() => navigator.language?.toLowerCase().startsWith("hi") ? "hi-IN" : "en-IN");
+  const voiceModeRef = useRef(false);
   const activeRef = useRef(active);
-  const speechSettingsRef = useRef({ speakReplies, speechRate });
+  const busyRef = useRef(false);
+  const requestController = useRef(null);
+  const requestGeneration = useRef(0);
+  const messageList = useRef(null);
+  const imageInput = useRef(null);
+  const speech = useTextToSpeech(active);
+  const voice = useVoiceRecording(active, (text) => {
+    voiceModeRef.current = false;
+    setVoiceMode(false);
+    void sendTurn(text, null, true);
+  }, () => {
+    voiceModeRef.current = false;
+    setVoiceMode(false);
+  }, voiceLanguage);
+  const reportImages = messages.flatMap((message) => message.attachments || []);
+  const mayCreateReport = !incidentId || (report && ["resolved", "cancelled"].includes(report.status));
+
   useEffect(() => { activeRef.current = active; }, [active]);
-  useEffect(() => { speechSettingsRef.current = { speakReplies, speechRate }; }, [speakReplies, speechRate]);
-  useEffect(() => () => requestController.current?.abort(), []);
   useEffect(() => {
-    if (messageList.current)
-      messageList.current.scrollTop = messageList.current.scrollHeight;
-  }, [messages, typing]);
+    if (!active) return;
+    return () => { voiceModeRef.current = false; setVoiceMode(false); };
+  }, [active]);
+  useEffect(() => () => requestController.current?.abort(), []);
+  useEffect(() => { if (messageList.current) messageList.current.scrollTop = messageList.current.scrollHeight; }, [messages, typing]);
+
+  function commitMessages(next) {
+    messagesRef.current = next;
+    setMessages(next);
+    setStorageError(saveChatHistory(localStorage, next) ? "" : "Chat could not be saved on this device. Keep this page open to retain the conversation.");
+  }
 
   async function requestReply(conversation) {
+    const generation = ++requestGeneration.current;
     const controller = new AbortController();
     requestController.current = controller;
-    const timeout = setTimeout(() => controller.abort(), 60000);
+    const timeout = setTimeout(() => controller.abort(), 125000);
     setTyping(true);
     setError("");
     setFailedMessages(null);
     try {
       const apiBase = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
       const response = await fetch(`${apiBase}/api/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: controller.signal,
+        method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
         body: JSON.stringify({
-          messages: conversation.filter((message) => message.id !== "welcome")
-            .slice(-8)
-            .map((message) => ({ role: message.from, content: message.text.slice(0, 2000) })),
-          context: {
-            remaining_seconds: remaining,
-            tracking_started: Boolean(trackingStarted),
-            has_report: Boolean(report),
-            attachment_count: report?.attachments?.length || 0,
-          },
-          reply_language: replyLanguage,
+          messages: conversation.map((message) => ({ role: message.from, content: message.text,
+            ...(message.attachments?.length ? { attachments: message.attachments } : {}) })),
+          context: { incident_id: incidentId || null }, reply_language: "auto",
         }),
       });
       const data = await response.json().catch(() => null);
-      if (!response.ok) {
-        throw new Error(typeof data?.detail === "string"
-          ? data.detail : "Chat is unavailable. Check that the backend is running.");
-      }
-      if (typeof data?.reply !== "string" || !data.reply.trim()) {
-        throw new Error("The assistant returned an empty reply. Please try again.");
-      }
-      const reply = { id: crypto.randomUUID(), from: "assistant", text: data.reply };
-      setMessages((current) => [
-        ...current,
-        reply,
-      ]);
-      if (speechSettingsRef.current.speakReplies && activeRef.current) {
-        speech.speak(reply.id, reply.text, speechSettingsRef.current.speechRate);
+      if (generation !== requestGeneration.current) return;
+      if (!response.ok) throw new Error(typeof data?.detail === "string" ? data.detail : response.status === 422 ? "This conversation has reached its size limit. Start a new report to continue." : "Chat is unavailable. Please try again.");
+      if (typeof data?.reply !== "string" || !data.reply.trim()) throw new Error("The assistant returned an empty reply. Please try again.");
+      const reply = { id: crypto.randomUUID(), from: "assistant", text: data.reply.replace(/\*\*/g, "") };
+      commitMessages([...messagesRef.current, reply]);
+      if (data.recommend_report) setRecommended(true);
+      if (activeRef.current && speech.supported) {
+        speech.speak(reply.id, reply.text);
+      } else if (activeRef.current && !speech.supported) {
+        setError("Spoken replies are unavailable in this browser. You can read the reply above.");
       }
     } catch (failure) {
-      setError(failure.name === "AbortError"
-        ? "The request timed out. Please try again."
-        : failure instanceof TypeError
-          ? "Cannot connect to chat. Check that the backend is running."
-          : failure.message);
+      if (generation !== requestGeneration.current) return;
+      voiceModeRef.current = false;
+      setVoiceMode(false);
+      setError(failure.name === "AbortError" ? "The request timed out. Please try again." : failure instanceof TypeError ? "Cannot connect to chat. Please try again." : failure.message);
       setFailedMessages(conversation);
     } finally {
       clearTimeout(timeout);
-      requestController.current = null;
-      setTyping(false);
+      if (generation === requestGeneration.current) {
+        requestController.current = null;
+        busyRef.current = false;
+        setTyping(false);
+      }
     }
   }
 
-  async function sendMessage(event, suggestion) {
-    event?.preventDefault();
-    const text = (suggestion || draft).trim();
-    if (!text || typing) return;
-    if (text.length > 2000) {
-      setError("Your message is over 2,000 characters. Please shorten it before sending.");
+  async function sendTurn(rawText, attachedImage = image, fromVoice = false) {
+    const text = rawText.trim();
+    if ((!text && !attachedImage) || busyRef.current || preparingImage) return;
+    if (text.length > 2000) { setError("Please keep messages under 2,000 characters."); return; }
+    busyRef.current = true;
+    speech.stop();
+    const message = { id: crypto.randomUUID(), from: "user", text: text || "Please help me report what is shown in this image.",
+      imageOnly: !text, attachments: attachedImage ? [attachedImage] : [] };
+    const conversation = [...messagesRef.current, message];
+    commitMessages(conversation);
+    if (!fromVoice) { setDraft(""); setImage(null); }
+    await requestReply(conversation);
+  }
+
+  async function chooseImage(event) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setPreparingImage(true);
+    setError("");
+    try {
+      const compressed = await compressImage(file);
+      const [uploaded] = await uploadAttachments([{ file: compressed, name: compressed.name }]);
+      setImage(uploaded);
+    } catch (failure) { setError(failure.message || "Could not prepare the image."); }
+    finally { setPreparingImage(false); }
+  }
+
+  function endVoice() {
+    voiceModeRef.current = false;
+    setVoiceMode(false);
+    voice.stop();
+    speech.stop();
+  }
+
+  function toggleVoice() {
+    if (voiceModeRef.current) {
+      if (voice.status === "recording") voice.finish();
       return;
     }
-    const conversation = [
-      ...messages,
-      { id: crypto.randomUUID(), from: "user", text },
-    ];
-    if (onReportUpdate && shareUpdates) {
-      setTyping(true);
-      setError("");
-      try {
-        await onReportUpdate({ description: text });
-      } catch (failure) {
-        setError(`Your incident update was not saved: ${failure.message}`);
-        setTyping(false);
-        return;
-      }
-      setTyping(false);
+    if (!voice.supported) {
+      setError("Speech recognition is unavailable in this browser. Try Chrome or type your message.");
+      return;
     }
-    setMessages(conversation);
-    setDraft("");
-    requestReply(conversation);
+    setError("");
+    voiceModeRef.current = true;
+    setVoiceMode(true);
+    speech.stop();
+    voice.start();
   }
-  return (
-    <section className="chat-surface surface">
-      <div className="chat-heading">
-        <span className="assistant-avatar">
-          <Icon name="spark" size={24} />
-        </span>
-        <div>
-          <h2>Teevra Assist</h2>
-          <p>A little support, right here.</p>
-        </div>
-        <span className="small-badge">AI</span>
-      </div>
-      <div className="chat-speech-settings">
-        <span>
-          <Icon name="volume" size={17} />
-          {speech.supported ? "Speak a message and listen to replies." : "Audio playback is not supported in this browser."}
-        </span>
-        <label>
-          Reply language
-          <select value={replyLanguage} onChange={(event) => setReplyLanguage(event.target.value)}>
-            <option value="auto">Same as my message</option>
-            {["English", "Hindi", "Spanish", "French", "Bengali", "Tamil", "Telugu", "Marathi"].map((language) => (
-              <option key={language} value={language}>{language}</option>
-            ))}
-          </select>
-        </label>
-        {speech.supported && (
-          <label>
-            Reading speed
-            <select
-              value={speechRate}
-              onChange={(event) => {
-                speech.stop();
-                setSpeechRate(Number(event.target.value));
-              }}
-            >
-              <option value={0.75}>0.75×</option>
-              <option value={1}>1×</option>
-              <option value={1.25}>1.25×</option>
-              <option value={1.5}>1.5×</option>
-            </select>
-          </label>
-        )}
-        {speech.supported && <label className="chat-auto-speech">
-          <input type="checkbox" checked={speakReplies} onChange={(event) => {
-            setSpeakReplies(event.target.checked);
-            if (!event.target.checked) speech.stop();
-          }} />
-          Read new replies aloud
-        </label>}
-      </div>
-      <div
-        className="chat-messages"
-        ref={messageList}
-        role="log"
-        aria-label="Conversation"
-        aria-live="polite"
-      >
-        {messages.map((message) => (
-          <div key={message.id} className={`chat-message ${message.from}`}>
-            {message.from === "assistant" && (
-              <span className="message-avatar">
-                <Icon name="spark" size={17} />
-              </span>
-            )}
-            <div>
-              <div className="message-bubble">{message.text}</div>
-              <span className="message-time">
-                {message.from === "assistant" ? "Teevra Assist" : "You"}
-              </span>
-              {message.from === "assistant" && speech.supported && (
-                <button
-                  type="button"
-                  className="message-read-aloud"
-                  aria-label={speech.playingId === message.id ? "Stop reading this reply" : "Read this reply aloud"}
-                  aria-pressed={speech.playingId === message.id}
-                  onClick={() => speech.playingId === message.id
-                    ? speech.stop()
-                    : speech.speak(message.id, message.text, speechRate)}
-                >
-                  <Icon name={speech.playingId === message.id ? "stop" : "volume"} size={15} />
-                  {speech.playingId === message.id ? "Stop" : "Read aloud"}
-                </button>
-              )}
-            </div>
-          </div>
-        ))}
-        {typing && (
-          <div className="typing-indicator">
-            Preparing a reply <span>•••</span>
-          </div>
-        )}
-      </div>
-      {(speech.error || voice.error) && <p className="chat-speech-error" role="alert">{speech.error || voice.error}</p>}
-      {messages.length === 1 && (
-        <div className="chat-suggestions">
-          <span>YOU CAN ASK</span>
-          {["When will help arrive?", "How do I add a photo?"].map((text) => (
-            <button key={text} onClick={() => sendMessage(null, text)}>
-              {text}
-              <Icon name="arrow" size={17} />
-            </button>
-          ))}
-        </div>
-      )}
-      {error && (
-        <div className="chat-error" role="alert">
-          <p>{error}</p>
-          {failedMessages && <button type="button" disabled={typing} onClick={() => failedMessages && requestReply(failedMessages)}>
-            Retry
+
+  return <div className="conversation">
+    <div className="conversation-log" ref={messageList} role="log" aria-label="Conversation" aria-live="polite">
+      {!messages.length && <div className="conversation-empty"><span className="conversation-spark"><Icon name="spark" size={26} /></span><h1>What happened?</h1><p>Tell me what’s going on.</p></div>}
+      {messages.map((message) => <div key={message.id} className={`conversation-message ${message.from}`}>
+        <div className="conversation-bubble">
+          {message.attachments?.map((attachment) => <img key={attachment.id} className="conversation-image" src={mediaUrl(attachment.url)} alt={attachment.name || "Uploaded image"} />)}
+          {!message.imageOnly && <div>{message.text}</div>}
+          {message.from === "assistant" && speech.supported && <button type="button" className="conversation-audio" onClick={() => speech.playingId === message.id ? speech.stop() : speech.speak(message.id, message.text)} aria-label={speech.playingId === message.id ? "Stop audio" : "Play reply"}>
+            <Icon name={speech.playingId === message.id ? "stop" : "volume"} size={16} />
           </button>}
         </div>
-      )}
-      {onReportUpdate && <label className="chat-share-update"><input type="checkbox" checked={shareUpdates} onChange={(e) => setShareUpdates(e.target.checked)} />Share my messages as updates to report {report.id}</label>}
-      <div className="chat-recording">
-        <button
-          type="button"
-          className={`chat-record-button ${voice.status === "recording" ? "is-recording" : ""}`}
-          disabled={!voice.supported || typing || ["starting", "transcribing"].includes(voice.status)}
-          onClick={voice.status === "recording" ? voice.stop : voice.start}
-        >
-          <Icon name={voice.status === "recording" ? "stop" : "mic"} size={17} />
-          {voice.status === "recording" ? "Stop recording" : voice.status === "starting" ? "Starting microphone…" : voice.status === "transcribing" ? "Transcribing…" : "Speak your message"}
-        </button>
-        <span>{voice.supported ? "Up to 30 seconds. Review the transcript before sending." : "Voice input is unavailable in this browser."}</span>
-      </div>
-      <form className="chat-composer" onSubmit={sendMessage}>
-        <label className="sr-only" htmlFor="chat-input">
-          Message Teevra Assist
-        </label>
-        <input
-          id="chat-input"
-          placeholder="Type your message…"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          maxLength={2000}
-          autoComplete="off"
-        />
-        <button aria-label="Send message" disabled={!draft.trim() || typing || voice.status !== "idle"}>
-          <Icon name="send" size={21} />
-        </button>
-      </form>
-      <p className="chat-disclaimer">
-        AI can make mistakes. Not an emergency service. Recordings and spoken replies are sent to Google Gemini; chat messages go to OpenRouter and its providers.
-      </p>
-    </section>
-  );
+      </div>)}
+      {typing && <div className="conversation-thinking" role="status">Thinking<span>•••</span></div>}
+    </div>
+    {(error || speech.error || voice.error || storageError) && <div className="conversation-error" role="alert">{error || speech.error || voice.error || storageError}
+      {failedMessages && <button type="button" disabled={typing} onClick={() => { busyRef.current = true; requestReply(failedMessages); }}>Retry</button>}
+    </div>}
+    {voiceMode && <div className="conversation-voice-status" role="status">
+      <span>{voice.status === "recording" ? "Listening… tap the checkmark to send" : voice.status === "starting" ? "Starting microphone…" : voice.status === "transcribing" ? "Transcribing…" : typing ? "Thinking…" : speech.playingId ? "Speaking…" : "Voice chat on"}</span>
+      <button type="button" onClick={endVoice}>End voice</button>
+    </div>}
+    {image && <div className="conversation-preview"><img src={mediaUrl(image.url)} alt="Selected image" /><button type="button" onClick={() => setImage(null)} aria-label="Remove selected image"><Icon name="cross" size={16} /></button></div>}
+    <form className="conversation-compose" onSubmit={(event) => { event.preventDefault(); void sendTurn(draft); }}>
+      <input ref={imageInput} type="file" accept="image/jpeg,image/png,image/webp,image/gif" hidden onChange={chooseImage} aria-label="Choose an image" />
+      <button type="button" className="conversation-icon" onClick={() => imageInput.current?.click()} aria-label="Add image" disabled={preparingImage || typing || voiceMode}><Icon name="plus" size={23} /></button>
+      <label className="sr-only" htmlFor="chat-input">Message Teevra</label>
+      <input id="chat-input" placeholder={preparingImage ? "Preparing image…" : "Describe what happened…"} value={draft} onChange={(event) => setDraft(event.target.value)} maxLength={2000} autoComplete="off" disabled={voiceMode} />
+      {!draft.trim() && !image && !voiceMode && <button type="button" className="conversation-voice-language" onClick={() => setVoiceLanguage((value) => value === "en-IN" ? "hi-IN" : "en-IN")} aria-label={`Speech input language: ${voiceLanguage === "en-IN" ? "English" : "Hindi"}. Change language.`}>{voiceLanguage === "en-IN" ? "EN" : "हिं"}</button>}
+      {draft.trim() || image ? <button type="submit" className="conversation-send" aria-label="Send message" disabled={typing || preparingImage || voiceMode}><Icon name="send" size={20} /></button>
+        : <button type="button" className={`conversation-mic ${voiceMode ? "active" : ""}`} onClick={toggleVoice} disabled={(typing && !voiceMode) || preparingImage || (voiceMode && voice.status !== "recording")} aria-label={voiceMode ? "Send voice message" : "Start voice chat"}><Icon name={voiceMode ? "check" : "mic"} size={20} /></button>}
+    </form>
+    <div className="conversation-action">
+      {incidentId ? <button type="button" className="conversation-primary tracking" onClick={onTrack}><Icon name="pin" size={19} />Live tracking</button>
+        : <button type="button" className="conversation-primary" disabled={!messages.some((message) => message.from === "user") || !mayCreateReport} onClick={() => {
+          endVoice();
+          setReviewOpen(true);
+        }}>
+          <Icon name="siren" size={19} />{recommended ? "Review report" : "Report"}</button>}
+    </div>
+    {reviewOpen && mayCreateReport && <div className="report-modal" role="dialog" aria-modal="true" aria-label="Review report">
+      <ReportReview conversation={messages} attachmentCount={reportImages.length} name={reporterName} phone={reporterPhone} onCancel={() => setReviewOpen(false)}
+        onSubmit={async (details) => {
+          const created = await onSubmitReport({ ...details, attachments: reportImages });
+          requestGeneration.current += 1;
+          requestController.current?.abort();
+          requestController.current = null;
+          busyRef.current = false;
+          setTyping(false);
+          setError("");
+          setFailedMessages(null);
+          setReviewOpen(false);
+          const confirmation = { id: crypto.randomUUID(), from: "assistant", text: `Report ${created.id} was sent to the response workspace. You can follow its status in Live tracking.` };
+          commitMessages([...messagesRef.current, confirmation]);
+        }} />
+    </div>}
+  </div>;
 }

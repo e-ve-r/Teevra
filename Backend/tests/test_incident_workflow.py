@@ -6,6 +6,8 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -25,7 +27,7 @@ class IncidentWorkflowTests(unittest.TestCase):
         self.local_patch = patch.object(database, "_local", threading.local())
         self.path_patch.start()
         self.local_patch.start()
-        self.store = IncidentStore()
+        self.store = IncidentStore(seed_demo=True)
         self.initial_fleet = self.store.get_responders()
         conn = database.get_db_connection()
         with conn:
@@ -33,7 +35,7 @@ class IncidentWorkflowTests(unittest.TestCase):
             conn.execute("UPDATE responders SET status = 'Available', assigned_incident_id = NULL")
         self.store_patch = patch.object(main, "store", self.store)
         self.store_patch.start()
-        self.client_context = TestClient(main.create_app(main.Settings(openrouter_api_key=SecretStr(""), routing_base_url="")))
+        self.client_context = TestClient(main.create_app(main.Settings(ollama_model="", routing_base_url="")))
         self.client = self.client_context.__enter__()
 
     def tearDown(self):
@@ -50,6 +52,90 @@ class IncidentWorkflowTests(unittest.TestCase):
         response = self.client.post("/api/incidents", json=payload)
         self.assertEqual(response.status_code, 201, response.text)
         return response.json()
+
+    def test_emergency_red_flags_do_not_require_a_model_key(self):
+        response = self.client.post("/api/chat", json={"messages": [{"role": "user", "content": "Someone is not breathing normally"}]})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["recommend_report"])
+        self.assertIn("emergency service", response.json()["reply"])
+
+    def test_report_ids_are_unique(self):
+        ids = {self.create("Minor sprain")["id"] for _ in range(25)}
+        self.assertEqual(len(ids), 25)
+        self.assertTrue(all(identifier.startswith("TVR-") and len(identifier) == 36 for identifier in ids))
+
+    def test_new_databases_do_not_seed_demo_records(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(database, "DB_PATH", Path(directory) / "empty.db"), \
+             patch.object(database, "_local", threading.local()):
+            clean = IncidentStore()
+            self.assertEqual(clean.get_incidents(), [])
+            self.assertEqual(clean.get_responders(), [])
+            database.close_db_connection()
+
+    def test_retried_submission_returns_same_ticket_and_rejects_changed_data(self):
+        payload = {"submission_id": str(uuid.uuid4()), "reporter_name": "Test", "reporter_phone": "+91 90000 00000", "location_name": "Test", "description": "Vehicle accident"}
+        first = self.client.post("/api/incidents", json=payload)
+        second = self.client.post("/api/incidents", json=payload)
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(first.json()["id"], second.json()["id"])
+        changed = self.client.post("/api/incidents", json={**payload, "description": "Different incident"})
+        self.assertEqual(changed.status_code, 409)
+        self.assertEqual(len([item for item in self.client.get("/api/incidents").json() if item["id"] == first.json()["id"]]), 1)
+
+    def test_report_is_visible_while_ai_assessment_is_still_running(self):
+        started, release = threading.Event(), threading.Event()
+
+        async def slow_assessment(**kwargs):
+            started.set()
+            while not release.is_set():
+                await asyncio.sleep(.01)
+            return rule_based_triage(kwargs["description"])
+
+        app = main.create_app(main.Settings(_env_file=None, openrouter_api_key=SecretStr("test-key"), routing_base_url=""))
+        with patch.object(main, "evaluate_incident_ai", side_effect=slow_assessment), TestClient(app) as client:
+            try:
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    pending = pool.submit(client.post, "/api/incidents", json={"reporter_name": "Test", "reporter_phone": "+91 90000 00000", "location_name": "Test", "description": "Accident with injuries"})
+                    try:
+                        response = pending.result(timeout=2)
+                        self.assertEqual(response.status_code, 201)
+                        self.assertEqual(response.json()["triage"]["source"], "rules")
+                        self.assertTrue(response.json()["triage"]["review_required"])
+                        self.assertIn(response.json()["id"], [item["id"] for item in client.get("/api/incidents").json()])
+                        self.assertTrue(started.wait(1))
+                    finally:
+                        release.set()
+            finally:
+                release.set()
+
+    def test_initial_background_assessment_cannot_replace_newer_update(self):
+        started, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+        async def assessment(**kwargs):
+            if kwargs.get("latest_description"):
+                return rule_based_triage(kwargs["description"])
+            started.set()
+            while not release.is_set():
+                await asyncio.sleep(.01)
+            finished.set()
+            return rule_based_triage("Minor sprain")
+
+        app = main.create_app(main.Settings(_env_file=None, openrouter_api_key=SecretStr("test-key"), routing_base_url=""))
+        with patch.object(main, "evaluate_incident_ai", side_effect=assessment), TestClient(app) as client:
+            try:
+                created = client.post("/api/incidents", json={"reporter_name": "Test", "reporter_phone": "+91 90000 00000", "location_name": "Test", "description": "Minor sprain"}).json()
+                self.assertTrue(started.wait(1))
+                updated = client.post(f'/api/incidents/{created["id"]}/updates', json={"description": "Now unconscious"})
+                self.assertEqual(updated.status_code, 200)
+                self.assertEqual(updated.json()["priority"], "P1")
+                release.set()
+                self.assertTrue(finished.wait(2))
+                final = client.get(f'/api/incidents/{created["id"]}').json()
+                self.assertEqual(final["revision"], 1)
+                self.assertEqual(final["priority"], "P1")
+            finally:
+                release.set()
 
     def test_legacy_dispatches_are_reconciled_before_fleet_is_available(self):
         assigned = {u.id for u in self.initial_fleet if u.assigned_incident_id}
@@ -208,9 +294,9 @@ class IncidentWorkflowTests(unittest.TestCase):
         mock_client.post.return_value = httpx.Response(200, json={"choices": [{"message": {"content": rule_based_triage("Fire with trapped victim").model_dump_json()}}]})
         result = asyncio.run(evaluate_incident_ai("Voice report", 1, mock_client, SecretStr("test-key"), attachments=[attachment]))
         parts = mock_client.post.call_args.kwargs["json"]["messages"][1]["content"]
-        self.assertEqual(parts[1]["type"], "input_audio")
-        self.assertEqual(parts[1]["input_audio"]["format"], "wav")
-        self.assertTrue(parts[1]["input_audio"]["data"])
+        self.assertIn("not visible to this text-only model", parts)
+        self.assertTrue(result.review_required)
+        self.assertTrue(mock_client.post.call_args.args[0].startswith("http://127.0.0.1:11434/"))
         mock_client.post.side_effect = httpx.ConnectError("Unavailable")
         fallback = asyncio.run(evaluate_incident_ai("Voice report", 1, mock_client, SecretStr("test-key"), attachments=[attachment]))
         self.assertEqual(fallback.source, "rules")
@@ -249,7 +335,8 @@ class IncidentWorkflowTests(unittest.TestCase):
         mock_client.post.return_value = httpx.Response(200, json={"choices": [{"message": {"content": rule_based_triage("Fire with trapped victim").model_dump_json()}}]})
         result = asyncio.run(evaluate_incident_ai("Fire", 1, mock_client, SecretStr("fake-test-key"), attachments=[Attachment(**incident["attachments"][0])]))
         parts = mock_client.post.call_args.kwargs["json"]["messages"][1]["content"]
-        self.assertTrue(parts[1]["image_url"]["url"].startswith("data:image/png;base64,"))
+        self.assertIn("not visible to this text-only model", parts)
+        self.assertTrue(result.review_required)
         self.assertEqual(result.source, "ai")
         Path(main.__file__).resolve().parent.parent.joinpath(response.json()["url"].lstrip("/")).unlink()
 

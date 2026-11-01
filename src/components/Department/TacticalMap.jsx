@@ -71,7 +71,10 @@ export default function TacticalMap({
     if (!id || lat == null || lng == null) return;
     let stopped = false;
     let timer;
+    let inFlight = false;
     async function refresh() {
+      if (stopped || document.hidden || inFlight) return;
+      inFlight = true;
       try {
         const result = await api(
           `/api/incidents/${encodeURIComponent(id)}/map${unitIds ? `?unit_ids=${encodeURIComponent(unitIds)}` : ""}`,
@@ -84,13 +87,17 @@ export default function TacticalMap({
       } catch (failure) {
         if (!stopped) setError(failure.message);
       } finally {
-        if (!stopped) timer = setTimeout(refresh, 15000);
+        inFlight = false;
+        if (!stopped && !document.hidden) timer = setTimeout(refresh, 15000);
       }
     }
+    function visibilityChanged() { clearTimeout(timer); if (!document.hidden) refresh(); }
+    document.addEventListener("visibilitychange", visibilityChanged);
     refresh();
     return () => {
       stopped = true;
       clearTimeout(timer);
+      document.removeEventListener("visibilitychange", visibilityChanged);
     };
   }, [id, lat, lng, unitIds, onMapUpdate]);
 

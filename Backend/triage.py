@@ -1,8 +1,5 @@
 """AI Triage Engine for emergency incident evaluation and resource recommendation."""
 
-import base64
-import mimetypes
-from pathlib import Path
 import json
 import logging
 import re
@@ -297,62 +294,35 @@ async def evaluate_incident_ai(
     description: str,
     attachments_count: int,
     client: Optional[httpx.AsyncClient],
-    api_key: SecretStr,
-    model: str = "google/gemma-4-31b-it",
+    api_key: Optional[SecretStr] = None,
+    model: str = "llama3.2",
     attachments=None,
     latest_description=None,
+    base_url="http://127.0.0.1:11434",
 ) -> TriageAssessment:
-    """Invokes OpenRouter to produce rich clinical triage, with reliable fallback."""
-    if hasattr(api_key, "get_secret_value"):
-        token = api_key.get_secret_value().strip()
-    else:
-        token = str(api_key or "").strip()
-
-    if not token or not client:
+    """Use local Ollama for text assessment, with a reviewed rules fallback."""
+    if not client:
         return assess_report_history(description, attachments_count, latest_description)
-
-    content_parts = []
-    uploads = Path(__file__).resolve().parent.parent / "uploads"
-    total_bytes = 0
-    for attachment in (attachments or [])[-6:]:
-        url = attachment.url or ""
-        if not url.startswith("/uploads/"):
-            continue
-        path = (uploads / url.removeprefix("/uploads/")).resolve()
-        if path.parent != uploads or not path.is_file():
-            continue
-        size = path.stat().st_size
-        if size > 20 * 1024 * 1024 or total_bytes + size > 24 * 1024 * 1024:
-            continue
-        total_bytes += size
-        encoded = base64.b64encode(path.read_bytes()).decode()
-        mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        if attachment.kind == "image":
-            content_parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{encoded}"}})
-        elif attachment.kind == "audio":
-            fmt = path.suffix.lstrip(".")
-            content_parts.append({"type": "input_audio", "input_audio": {"data": encoded, "format": fmt}})
 
     prompt = f"""Emergency Incident Intake Report:
 Description: "{description}"
 Latest situation update: {latest_description or "No update; initial report"}
-Attachments: {attachments_count} media files (photos/audio notes)
+Attachments: {attachments_count} media files (photos/audio notes), not visible to this text-only model. Do not infer their contents.
 Evaluate priority, severity (1-100), category, hazards, and recommended response unit. Return JSON only."""
 
     try:
         response = await client.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={"Authorization": f"Bearer {token}"},
+            f"{base_url.rstrip('/')}/v1/chat/completions",
             json={
                 "model": model,
                 "messages": [
                     {"role": "system", "content": TRIAGE_SYSTEM_PROMPT},
-                    {"role": "user", "content": [{"type": "text", "text": prompt}, *content_parts]},
+                    {"role": "user", "content": prompt},
                 ],
                 "max_tokens": 800,
                 "temperature": 0.2,
             },
-            timeout=30.0,
+            timeout=120.0,
         )
         if response.status_code == 200:
             content = response.json()["choices"][0]["message"]["content"].strip()
@@ -378,12 +348,12 @@ Evaluate priority, severity (1-100), category, hazards, and recommended response
                 recommended_actions=parsed.get("recommended_actions", []),
                 recommended_departments=departments_for(parsed.get("category", "Medical"), description, parsed.get("recommended_departments", [])),
                 source="ai",
-                review_required=bool(parsed.get("review_required", False)) or len(content_parts) < attachments_count,
+                review_required=bool(parsed.get("review_required", False)) or attachments_count > 0,
                 ai_confidence=float(parsed.get("ai_confidence", 0.0)),
             )
     except Exception as exc:
         logger.warning(
-            "OpenRouter triage call failed, using rule-based fallback: %s", exc
+            "Ollama triage call failed, using rule-based fallback: %s", exc
         )
 
     return assess_report_history(description, attachments_count, latest_description)

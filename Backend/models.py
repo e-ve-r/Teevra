@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 from enum import Enum
 from typing import List, Optional
+from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
@@ -112,6 +113,7 @@ class IncidentCreateRequest(BaseModel):
     description: str = Field(min_length=1, max_length=2000)
     attachments: List[Attachment] = Field(default_factory=list)
     category: Optional[IncidentCategory] = None
+    submission_id: Optional[UUID] = None
 
     @model_validator(mode="after")
     def coordinate_pair(self):

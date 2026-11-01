@@ -1,6 +1,6 @@
 # Teevra incident and response API
 
-Python 3.11+, FastAPI and SQLite back the reporter and responder dashboards. OpenRouter supplies the configured AI model; no local model weights are required.
+Python 3.11+, FastAPI and SQLite back the reporter and responder dashboards. Ollama runs Llama 3.2 for chat and report assessment and Moondream for image descriptions.
 
 ## Setup
 
@@ -11,17 +11,16 @@ python3 -m venv Backend/.venv
 Backend/.venv/bin/python -m pip install -r Backend/requirements.txt
 ```
 
-Create `Backend/.env` with your server-side configuration:
+Install and start Ollama, then run `ollama pull llama3.2` and `ollama pull moondream`. The following optional `Backend/.env` settings show the defaults:
 
 ```dotenv
-OPENROUTER_API_KEY=your-key
-OPENROUTER_MODEL=google/gemma-4-31b-it
-OPENROUTER_CHAT_MODEL=openrouter/free
-GEMINI_KEY=your-google-gemini-key
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+OLLAMA_MODEL=llama3.2
+OLLAMA_VISION_MODEL=moondream
 CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 ```
 
-`OPENROUTER_MODEL` controls incident triage and may be a paid model. `OPENROUTER_CHAT_MODEL` must be `openrouter/free` or a model ID ending in `:free`. Voice chat uses Gemini 3.5 Transcribe and Gemini 3.8 Flash-Lite TTS. Both have free tiers, subject to Google account eligibility and limits; paid Gemini projects can incur charges. Google may use free-tier content to improve its products. `GEMINI_API_KEY` and `GOOGLE_API_KEY` are also accepted if `GEMINI_KEY` is not set. Never expose keys in `VITE_` variables. With no key or a failing triage provider, reports use a labelled rules assessment and require operator review. Chat and voice return explicit errors when unavailable.
+When Ollama is unavailable, reports use a labelled rules assessment requiring operator review; chat reports an error and report summaries can be entered manually. The browser handles voice by default. The optional Gemini voice endpoints require a server-side `GEMINI_KEY` and explicit frontend selection; never expose keys in `VITE_` variables.
 
 ```sh
 Backend/.venv/bin/python -m uvicorn Backend.main:app --reload --reload-dir Backend --reload-exclude '**/.venv/**' --host 127.0.0.1 --port 8000
@@ -33,7 +32,7 @@ Then run `npm run dev` in another terminal. Open `/` for reporters and `/respond
 
 | Endpoint | Purpose |
 | --- | --- |
-| `POST /api/incidents` | Create a report with callback number, address, optional GPS coordinates/accuracy, text and uploaded attachment references. Run initial triage. |
+| `POST /api/incidents` | Immediately create a uniquely identified report with a rules-based initial assessment; refine it with AI in the background. |
 | `GET /api/incidents` | List incidents in priority/severity/age order; supports status, priority, category and search filters. |
 | `GET /api/incidents/{id}` | Read saved incident, assessment, updates, attachments, fleet assignments and status. |
 | `POST /api/incidents/{id}/updates` | Persist new text/media and optional updated incident coordinates, then assess the full timestamped history. |
@@ -54,7 +53,7 @@ Then run `npm run dev` in another terminal. Open `/` for reporters and `/respond
 
 ## Evaluation and updates
 
-Text and supported local uploaded media use [OpenRouter multimodal chat content](https://openrouter.ai/docs/guides/overview/multimodal/overview). Images use data URLs and audio uses base64 `input_audio`; model and provider support for audio formats varies. Up to the latest six attachments and 24 MB of source bytes are included per evaluation. Skipped/unsupported attachments require operator review. Original uploads remain accessible to the responder. External attachment URLs are not fetched by the model bridge.
+The latest three conversation images are described by local Moondream and their unverified descriptions are supplied to Llama. Successful descriptions are cached in memory to avoid repeating image inference on every turn. If image inference fails, Llama is told the image is unavailable. Llama's triage assessment is text-only and flags attachments for operator review; original uploads remain accessible to the responder. External attachment URLs are not fetched by the model bridge.
 
 Updates are stored before inference and serialize per incident within the API process, so a later update cannot be overwritten by an earlier assessment. Reassessment includes the original report and every timestamped update. The response indicates when a newer update is awaiting assessment. Fresh assessments replace the previous score and priority. Explicit reported improvement can lower the fallback score, with operator review required; escalation updates priority, classification, queue order and department recommendations. Provider failure uses a labelled rules fallback with zero model confidence rather than claiming an AI result.
 

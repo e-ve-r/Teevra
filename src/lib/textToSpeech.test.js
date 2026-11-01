@@ -70,3 +70,14 @@ test("rejects invalid audio and supports browsers without audio playback", async
   assert.match(states.at(-1).error, /invalid speech audio/);
   assert.equal(createSpeechPlayback(null, () => {}).supported, false);
 });
+
+test("voice conversation continues only after a reply finishes naturally", async () => {
+  const { player, audios } = setup();
+  let completed = 0;
+  await player.speak("reply", "Hello", 1, () => { completed += 1; });
+  player.stop();
+  assert.equal(completed, 0);
+  await player.speak("next", "Hello again", 1, () => { completed += 1; });
+  audios[1].onended();
+  assert.equal(completed, 1);
+});

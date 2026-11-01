@@ -1,7 +1,10 @@
 """Persistent incident and fleet operations. All writes share a reentrant lock."""
 from datetime import datetime, timezone
 import json
+import hashlib
+import sqlite3
 import threading
+import uuid
 
 if __package__:
     from .database import get_db_connection, init_database
@@ -18,9 +21,9 @@ def now_iso():
 
 
 class IncidentStore:
-    def __init__(self):
+    def __init__(self, seed_demo=False):
         self._lock = threading.RLock()
-        init_database()
+        init_database(seed_demo=seed_demo)
 
     def _row_to_incident(self, conn, row):
         data = dict(row)
@@ -80,20 +83,40 @@ class IncidentStore:
     def create_incident(self, req, triage=None):
         with self._lock:
             conn = get_db_connection()
-            seq = max([int(r[0].split("-")[-1]) for r in conn.execute("SELECT id FROM incidents") if r[0].split("-")[-1].isdigit()] + [2049]) + 1
-            incident_id = f"TVR-{seq}"
-            with conn:
-                conn.execute("""INSERT INTO incidents (id, reporter_name, reporter_phone, location_name, lat, lng, description, category, priority, status, created_at, triage_json, dispatch_json, attachments_json, coordinates_known, location_accuracy_m)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (
-                    incident_id, req.reporter_name, req.reporter_phone, req.location_name,
-                    req.lat if req.lat is not None else 0, req.lng if req.lng is not None else 0,
-                    req.description, (triage.category if triage else req.category or IncidentCategory.OTHER).value,
-                    (triage.priority if triage else IncidentPriority.P2).value,
-                    IncidentStatus.TRIAGE_COMPLETE.value if triage else IncidentStatus.PENDING_TRIAGE.value,
-                    now_iso(), triage.model_dump_json() if triage else None, None,
-                    json.dumps([a.model_dump() for a in req.attachments]), int(req.lat is not None), req.location_accuracy_m))
-                self._event(conn, incident_id, "Report received", "Reporter", req.description)
-            return self.get_incident(incident_id)
+            submission_id = str(req.submission_id) if req.submission_id else None
+            fingerprint = hashlib.sha256(req.model_dump_json(exclude={"submission_id"}).encode()).hexdigest()
+
+            def existing_submission():
+                if not submission_id:
+                    return None
+                existing = conn.execute("SELECT id, submission_hash FROM incidents WHERE submission_id = ?", (submission_id,)).fetchone()
+                if existing and existing["submission_hash"] != fingerprint:
+                    raise ValueError("This submission was already used with different details. Check your report status before trying again.")
+                return self.get_incident(existing["id"]) if existing else None
+
+            existing = existing_submission()
+            if existing:
+                return existing, False
+            incident_id = f"TVR-{uuid.uuid4().hex.upper()}"
+            try:
+                with conn:
+                    conn.execute("""INSERT INTO incidents (id, reporter_name, reporter_phone, location_name, lat, lng, description, category, priority, status, created_at, triage_json, dispatch_json, attachments_json, coordinates_known, location_accuracy_m, submission_id, submission_hash)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (
+                        incident_id, req.reporter_name, req.reporter_phone, req.location_name,
+                        req.lat if req.lat is not None else 0, req.lng if req.lng is not None else 0,
+                        req.description, (triage.category if triage else req.category or IncidentCategory.OTHER).value,
+                        (triage.priority if triage else IncidentPriority.P2).value,
+                        IncidentStatus.TRIAGE_COMPLETE.value if triage else IncidentStatus.PENDING_TRIAGE.value,
+                        now_iso(), triage.model_dump_json() if triage else None, None,
+                        json.dumps([a.model_dump() for a in req.attachments]), int(req.lat is not None), req.location_accuracy_m,
+                        submission_id, fingerprint if submission_id else None))
+                    self._event(conn, incident_id, "Report received", "Reporter", req.description)
+            except sqlite3.IntegrityError:
+                existing = existing_submission()
+                if existing:
+                    return existing, False
+                raise
+            return self.get_incident(incident_id), True
 
     def append_update(self, incident_id, req):
         with self._lock:

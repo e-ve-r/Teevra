@@ -12,12 +12,15 @@ export async function api(path, options = {}) {
     );
   }
   const data = await response.json().catch(() => null);
-  if (!response.ok)
-    throw new Error(
+  if (!response.ok) {
+    const error = new Error(
       typeof data?.detail === "string"
         ? data.detail
         : "The request could not be saved. Check the details and try again.",
     );
+    error.status = response.status;
+    throw error;
+  }
   return data;
 }
 export function post(path, data, method = "POST") {

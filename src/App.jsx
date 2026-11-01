@@ -1,513 +1,237 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Icon from "./components/Icon";
-import ReportForm from "./components/Attachments";
 import Assistant from "./components/Assistant";
 import TacticalMap from "./components/Department/TacticalMap";
 import { api, post, statusLabel } from "./lib/api";
+import { archiveChatHistory } from "./lib/chatHistory";
 import "./App.css";
 
-const navigation = [
-  { id: "home", label: "Home", icon: "home" },
-  { id: "tracking", label: "Live tracking", icon: "pin" },
-  { id: "report", label: "Report", icon: "send" },
-  { id: "chat", label: "AI chat", icon: "chat" },
-  { id: "profile", label: "Profile", icon: "user" },
-];
 const closed = (report) => ["resolved", "cancelled"].includes(report?.status);
-function PageHeading({ eyebrow, title, children }) {
-  return (
-    <div className="page-heading">
-      {eyebrow && (
-        <p className="eyebrow">
-          <span className="status-dot" />
-          {eyebrow}
-        </p>
-      )}
-      <h1>
-        {title}
-        <span className="red-period">.</span>
-      </h1>
-      {children && <p className="page-description">{children}</p>}
-    </div>
-  );
+const readLocal = (key, fallback = "") => localStorage.getItem(key) || sessionStorage.getItem(key) || fallback;
+function historyIds() {
+  try {
+    const ids = JSON.parse(localStorage.getItem("teevra.history") || "[]");
+    return Array.isArray(ids) ? ids.filter((id) => typeof id === "string") : [];
+  } catch { return []; }
 }
 
 export default function App() {
-  const [page, setPage] = useState("home");
-  const [liveMap, setLiveMap] = useState(null);
+  const [page, setPage] = useState("chat");
+  const [profileTab, setProfileTab] = useState("details");
+  const [reporterName, setReporterName] = useState(() => readLocal("teevra.name"));
+  const [reporterPhone, setReporterPhone] = useState(() => readLocal("teevra.phone"));
+  const [incidentId, setIncidentId] = useState(() => readLocal("teevra.incident"));
+  const [history, setHistory] = useState(historyIds);
   const [report, setReport] = useState(null);
-  const [incidentId, setIncidentId] = useState(() =>
-    sessionStorage.getItem("teevra.incident"),
-  );
-  const [reporterName, setReporterName] = useState(
-    () => sessionStorage.getItem("teevra.name") || "Reporter",
-  );
+  const [liveMap, setLiveMap] = useState(null);
+  const [historyReports, setHistoryReports] = useState([]);
+  const [viewedReport, setViewedReport] = useState(null);
+  const [viewedMap, setViewedMap] = useState(null);
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
+  const [reportNotFound, setReportNotFound] = useState(false);
+  const [profileNotice, setProfileNotice] = useState("");
+  const [updateText, setUpdateText] = useState("");
   const [updateOpen, setUpdateOpen] = useState(false);
-  const heading = useRef(null);
-  const initials = reporterName
-    .split(/\s+/)
-    .slice(0, 2)
-    .map((n) => n[0])
-    .join("")
-    .toUpperCase();
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateNotice, setUpdateNotice] = useState("");
+  const [conversationKey, setConversationKey] = useState(0);
+  const submitBusy = useRef(false);
+  const activeReport = report && !closed(report);
+  const viewedId = viewedReport?.id;
+  const onTrackingMapUpdate = useCallback((map) => {
+    if (viewedId) setViewedMap(map);
+    else setLiveMap(map);
+  }, [viewedId]);
+  const initials = reporterName.trim().split(/\s+/).filter(Boolean).slice(0, 2).map((name) => name[0]).join("").toUpperCase();
 
   useEffect(() => {
-    if (!incidentId) return;
+    if (!incidentId || (page === "tracking" && viewedId)) return;
     let cancelled = false;
+    let timer;
+    let inFlight = false;
     async function refresh() {
+      if (cancelled || document.hidden || inFlight) return;
+      inFlight = true;
       try {
-        const updated = await api(`/api/incidents/${incidentId}`);
-        const map = await api(`/api/incidents/${incidentId}/map`).catch(
-          () => null,
-        );
+        const updated = await api(`/api/incidents/${encodeURIComponent(incidentId)}`);
         if (!cancelled) {
-          setReport((current) =>
-            current &&
-            current.id === updated.id &&
-            current.revision > updated.revision
-              ? current
-              : updated,
-          );
-          if (map) setLiveMap(map);
+          setReport((current) => current && current.id === updated.id && current.revision > updated.revision ? current : updated);
+          setReportNotFound(false);
           setError("");
         }
-      } catch (failure) {
-        if (!cancelled) setError(failure.message);
-      }
+      } catch (failure) { if (!cancelled) {
+        setError(failure.message);
+        setLiveMap(null);
+        if (failure.status === 404) { setReport(null); setReportNotFound(true); }
+      } }
+      finally { inFlight = false; if (!cancelled && !document.hidden && page === "tracking") timer = setTimeout(refresh, 10000); }
     }
+    function visibilityChanged() { clearTimeout(timer); if (!document.hidden) refresh(); }
+    document.addEventListener("visibilitychange", visibilityChanged);
     refresh();
-    const timer = setInterval(refresh, 3000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [incidentId]);
+    return () => { cancelled = true; clearTimeout(timer); document.removeEventListener("visibilitychange", visibilityChanged); };
+  }, [incidentId, page, viewedId]);
 
-  function navigate(target) {
-    setPage(target);
-    window.scrollTo({ top: 0, behavior: "instant" });
-    heading.current?.focus({ preventScroll: true });
-  }
+  useEffect(() => {
+    if (page !== "tracking" || !viewedId) return;
+    let cancelled = false;
+    let timer;
+    let inFlight = false;
+    async function refresh() {
+      if (cancelled || document.hidden || inFlight) return;
+      inFlight = true;
+      try {
+        const updated = await api(`/api/incidents/${encodeURIComponent(viewedId)}`);
+        if (!cancelled) { setViewedReport(updated); setError(""); }
+      } catch (failure) { if (!cancelled) { setError(failure.message); setViewedMap(null); } }
+      finally { inFlight = false; if (!cancelled && !document.hidden) timer = setTimeout(refresh, 10000); }
+    }
+    function visibilityChanged() { clearTimeout(timer); if (!document.hidden) refresh(); }
+    document.addEventListener("visibilitychange", visibilityChanged);
+    refresh();
+    return () => { cancelled = true; clearTimeout(timer); document.removeEventListener("visibilitychange", visibilityChanged); };
+  }, [page, viewedId]);
+
+  useEffect(() => {
+    if (page !== "profile" || profileTab !== "reports") return;
+    let cancelled = false;
+    const ids = [...new Set([incidentId, ...history].filter(Boolean))];
+    Promise.all(ids.map((id) => api(`/api/incidents/${encodeURIComponent(id)}`).catch(() => null)))
+      .then((items) => { if (!cancelled) setHistoryReports(items.filter(Boolean)); });
+    return () => { cancelled = true; };
+  }, [page, profileTab, history, incidentId]);
+
   async function submitReport(data) {
-    const created = await post("/api/incidents", {
-      ...data,
-      description:
-        data.description ||
-        "Media report. Review the attached evidence to assess the emergency.",
-    });
-    sessionStorage.setItem("teevra.incident", created.id);
-    setIncidentId(created.id);
-    setReport(created);
-    setNotice(
-      "Your report has been received. You can keep sharing changes below.",
-    );
-    navigate("tracking");
+    if (submitBusy.current) throw new Error("A report is already being submitted.");
+    if (incidentId && !report) throw new Error("Your report is still loading. Please try again.");
+    if (activeReport) throw new Error("You already have an active report. Use tracking to follow it.");
+    submitBusy.current = true;
+    try {
+      const created = await post("/api/incidents", data);
+      const nextHistory = [...new Set([created.id, incidentId, ...history].filter(Boolean))];
+      setHistory(nextHistory);
+      setReporterName(data.reporter_name);
+      setReporterPhone(data.reporter_phone);
+      setIncidentId(created.id);
+      setReport(created);
+      setViewedReport(null);
+      try {
+        localStorage.setItem("teevra.incident", created.id);
+        localStorage.setItem("teevra.history", JSON.stringify(nextHistory));
+        localStorage.setItem("teevra.name", data.reporter_name);
+        localStorage.setItem("teevra.phone", data.reporter_phone);
+      } catch {
+        setProfileNotice("Report sent, but this browser could not save its details for a later visit.");
+      }
+      return created;
+    } finally { submitBusy.current = false; }
   }
-  async function updateReport(data) {
-    const updated = await post(`/api/incidents/${incidentId}/updates`, {
-      description: data.description,
-      attachments: data.attachments || [],
-    });
-    setReport(updated);
-    setNotice(
-      "Update received. Your incident assessment and response recommendations have been refreshed.",
-    );
-  }
-  const dispatches =
-    report?.dispatches || (report?.dispatch ? [report.dispatch] : []);
-  const hasLocation = report?.lat != null && report?.lng != null;
 
-  return (
-    <div className="app-shell">
-      <header className="app-header">
-        <div className="header-inner">
-          <a
-            href="/"
-            className="brand"
-            onClick={(e) => {
-              e.preventDefault();
-              navigate("home");
-            }}
-            aria-label="Teevra home"
-          >
-            <img
-              className="brand-logo"
-              src="/TeevraLogo.png"
-              alt=""
-              width={64}
-              height={64}
-            />
-            <span className="brand-name">Teevra</span>
-          </a>
-          <div className="header-actions">
-            <span className="preview-badge">PREVIEW</span>
-            <button
-              className="profile-avatar"
-              onClick={() => navigate("profile")}
-              aria-label="Open your profile"
-            >
-              {initials}
-            </button>
+  function openTracking(item = null) {
+    setViewedMap(null);
+    setLiveMap(null);
+    setUpdateOpen(false);
+    setUpdateNotice("");
+    setError("");
+    setViewedReport(item && item.id !== incidentId ? item : null);
+    setPage("tracking");
+  }
+  const selected = viewedReport || report;
+  const candidateMap = viewedReport ? viewedMap : liveMap;
+  const selectedMap = candidateMap?.incident_id === selected?.id ? candidateMap : null;
+  const dispatches = selected?.dispatches || (selected?.dispatch ? [selected.dispatch] : []);
+
+  return <div className="app-shell reporter-shell">
+    <header className="reporter-header">
+      {page === "chat" ? <span aria-hidden="true" /> : <button type="button" className="reporter-back" onClick={() => setPage("chat")}><Icon name="arrowLeft" size={20} /> Chat</button>}
+      <img className="reporter-logo" src="/TeevraLogo.png" alt="Teevra" />
+      <button type="button" className="reporter-profile-button" onClick={() => setPage("profile")} aria-label="Open profile and reports">
+        <span className="reporter-profile-avatar">{initials || <Icon name="user" size={22} />}</span>
+      </button>
+    </header>
+    <main className={`reporter-main reporter-page-${page}`}>
+      <section className="reporter-chat" hidden={page !== "chat"}>
+        <Assistant key={conversationKey} active={page === "chat"} report={report} incidentId={incidentId} reporterName={reporterName}
+          reporterPhone={reporterPhone} onSubmitReport={submitReport} onTrack={() => openTracking()} />
+      </section>
+      {page === "tracking" && <section className="reporter-detail-page">
+        <h1>Live tracking</h1>
+        {error && <p role="alert" className="form-error">{error}</p>}
+        {!selected ? <>
+          <p>{reportNotFound ? "This report is not available on the current server." : incidentId ? "Loading report…" : "No report yet."}</p>
+          {reportNotFound && <button type="button" className="secondary-button" onClick={() => {
+            if (!archiveChatHistory(localStorage)) { setError("Could not save the previous chat on this device."); return; }
+            const nextHistory = [...new Set([incidentId, ...history].filter(Boolean))];
+            localStorage.removeItem("teevra.incident"); sessionStorage.removeItem("teevra.incident");
+            localStorage.setItem("teevra.history", JSON.stringify(nextHistory));
+            setHistory(nextHistory);
+            setIncidentId(""); setReportNotFound(false); setError(""); setConversationKey((n) => n + 1); setPage("chat");
+          }}>Start a new report</button>}
+        </> : <>
+          <div className="tracking-card surface">
+            <div className="report-response-heading"><div><p className="eyebrow">{selected.id}</p><h2>{statusLabel(selected.status)}</h2></div></div>
+            <div className="response-assignment-list">
+              {dispatches.length ? dispatches.map((unit) => {
+                const route = selectedMap?.routes?.find((item) => item.unit_id === unit.unit_id);
+                return <div key={unit.unit_id}><Icon name="shield" size={21} /><div><strong>{unit.unit_name}</strong>
+                  <p>{closed(selected) ? "Response completed" : selected.status === "on_scene" ? "At the incident" : route ? `Road estimate: ${route.eta_minutes} min · ${route.distance_km} km` : `ETA at assignment: ${unit.eta_minutes} min`}</p></div></div>;
+              }) : <p>No unit has been assigned yet.</p>}
+            </div>
+            {selected.lat != null && selected.lng != null && <TacticalMap incident={selected} height="280px" onMapUpdate={onTrackingMapUpdate} />}
+            <div className="destination"><span className="destination-pin"><Icon name="pin" size={20} /></span><div><span>INCIDENT LOCATION</span><strong>{selected.location_name}</strong></div></div>
           </div>
+          <p className="reporter-tracking-note">Prototype: reports reach the response workspace, not emergency services. Demo locations are labelled; road estimates exclude live traffic.</p>
+          {!closed(selected) && <div className="reporter-update">
+            {!updateOpen ? <button type="button" className="secondary-button" onClick={() => setUpdateOpen(true)}>Share an update</button> :
+              <form onSubmit={async (event) => {
+                event.preventDefault();
+                if (!updateText.trim() || updateBusy) return;
+                setUpdateBusy(true);
+                setUpdateNotice("");
+                try {
+                  const updated = await post(`/api/incidents/${encodeURIComponent(selected.id)}/updates`, { description: updateText.trim(), attachments: [] });
+                  if (viewedReport) setViewedReport(updated); else setReport(updated);
+                  setUpdateText(""); setUpdateOpen(false); setUpdateNotice("Update sent.");
+                } catch (failure) { setUpdateNotice(failure.message); }
+                finally { setUpdateBusy(false); }
+              }}>
+                <label htmlFor="tracking-update">What has changed?</label>
+                <textarea id="tracking-update" value={updateText} onChange={(event) => setUpdateText(event.target.value)} maxLength={2000} required rows={3} />
+                <div><button className="primary-button blue-button" disabled={updateBusy}>{updateBusy ? "Sending…" : "Send update"}</button>
+                  <button type="button" className="secondary-button" disabled={updateBusy} onClick={() => setUpdateOpen(false)}>Cancel</button></div>
+              </form>}
+            {updateNotice && <p role="status">{updateNotice}</p>}
+          </div>}
+        </>}
+      </section>}
+      {page === "profile" && <section className="reporter-detail-page">
+        <h1>Profile</h1>
+        <div className="reporter-tabs" role="tablist" aria-label="Profile sections">
+          <button type="button" role="tab" aria-selected={profileTab === "details"} onClick={() => setProfileTab("details")}>Your details</button>
+          <button type="button" role="tab" aria-selected={profileTab === "reports"} onClick={() => setProfileTab("reports")}>Your reports</button>
         </div>
-      </header>
-      <main
-        className={`main-content page-${page}`}
-        ref={heading}
-        tabIndex={-1}
-        aria-label={`${navigation.find((n) => n.id === page)?.label} screen`}
-      >
-        <section hidden={page !== "home"} className="screen home-screen">
-          <PageHeading
-            title={
-              <>
-                We got you
-                <br className="desktop-break" /> quick
-              </>
-            }
-          >
-            Report an emergency. Get help.
-          </PageHeading>
-          <div className="home-layout">
-            <section className="home-report-card">
-              <div className="hero-card-top">
-                <span className="siren-circle">
-                  <Icon name="siren" size={35} />
-                </span>
-              </div>
-              <h2>Unsure?</h2>
-              <p>
-                Share what’s happening.
-                <br />
-                We’ll help you take the next step.
-              </p>
-              <button
-                className="primary-button red-button"
-                onClick={() => navigate("report")}
-              >
-                <Icon name="send" size={22} />
-                Report an emergency
-                <Icon name="arrow" size={22} />
-              </button>
-              <span className="hero-caption">
-                A photo. A few words. Or just your voice.
-              </span>
-              <div className="hero-rings" aria-hidden="true">
-                <span />
-                <span />
-                <span />
-              </div>
-            </section>
-            <div className="home-shortcuts">
-              {[
-                {
-                  target: "tracking",
-                  icon: "pin",
-                  eyebrow: "EVERY STEP OF THE WAY",
-                  title: "Your response",
-                  text: "Follow your report and share what changes.",
-                },
-                {
-                  target: "chat",
-                  icon: "spark",
-                  eyebrow: "A LITTLE REASSURANCE",
-                  title: "Talk to Teevra",
-                  text: "Your AI companion, one tap away.",
-                },
-              ].map((s) => (
-                <button
-                  key={s.target}
-                  className="shortcut-card"
-                  onClick={() => navigate(s.target)}
-                >
-                  <span className="shortcut-icon">
-                    <Icon name={s.icon} size={27} />
-                  </span>
-                  <span className="shortcut-content">
-                    <span className="shortcut-eyebrow">{s.eyebrow}</span>
-                    <strong>{s.title}</strong>
-                    <span>{s.text}</span>
-                  </span>
-                  <Icon name="arrow" size={21} />
-                </button>
-              ))}
-            </div>
-          </div>
-          {report && (
-            <button
-              className="report-home-status surface"
-              onClick={() => navigate("tracking")}
-            >
-              <span className="status-dot" />
-              <strong>{report.id}</strong>
-              <span>{statusLabel(report.status)}</span>
-              <Icon name="arrow" size={18} />
-            </button>
-          )}
-        </section>
-        <section hidden={page !== "report"} className="screen report-screen">
-          <PageHeading
-            eyebrow="LET’S START WITH THE DETAILS"
-            title="Report an emergency"
-          >
-            A photo, a few words, or your voice. Every detail helps.
-          </PageHeading>
-          {report && !closed(report) && (
-            <div className="existing-report-notice">
-              <p>
-                You have an active report, {report.id}. Share a change on that
-                report to keep your response team up to date.
-              </p>
-              <button
-                className="secondary-button"
-                onClick={() => {
-                  setUpdateOpen(true);
-                  navigate("tracking");
-                }}
-              >
-                Update existing report
-                <Icon name="arrow" size={16} />
-              </button>
-            </div>
-          )}
-          <ReportForm
-            active={page === "report"}
-            onSubmit={submitReport}
-            reporterName={reporterName}
-          />
-        </section>
-        <section
-          hidden={page !== "tracking"}
-          className="screen tracking-screen"
-        >
-          <PageHeading eyebrow="CONNECTED, EVERY STEP" title="Your response">
-            Follow your report. Keep us up to date.
-          </PageHeading>
-          {error && (
-            <p role="alert" className="form-error">
-              {error}
-            </p>
-          )}
-          {notice && (
-            <div className="success-notice" role="status">
-              <Icon name="check" size={20} />
-              <p>{notice}</p>
-              <button
-                className="icon-button"
-                aria-label="Dismiss confirmation"
-                onClick={() => setNotice("")}
-              >
-                <Icon name="cross" size={18} />
-              </button>
-            </div>
-          )}
-          {!report ? (
-            <div className="surface empty-report">
-              <Icon name="pin" size={32} />
-              <h2>
-                {incidentId
-                  ? "Loading your report…"
-                  : "Your report will appear here"}
-              </h2>
-              <p>
-                Once you submit an emergency, you can follow its response and
-                send updates here.
-              </p>
-              <button
-                className="primary-button red-button"
-                onClick={() => navigate("report")}
-              >
-                Report an emergency
-                <Icon name="arrow" size={18} />
-              </button>
-            </div>
-          ) : (
-            <>
-              <section className="tracking-card surface">
-                <div className="report-response-heading">
-                  <div>
-                    <p className="eyebrow">{report.id}</p>
-                    <h2>{statusLabel(report.status)}</h2>
-                  </div>
-                  <span className="route-status">
-                    <span className="status-dot" />
-                    {closed(report) ? "Closed" : "Updates every 3 seconds"}
-                  </span>
-                </div>
-                <div className="response-assignment-list">
-                  {dispatches.length ? (
-                    dispatches.map((d) => (
-                      <div key={d.unit_id}>
-                        <Icon name="shield" size={21} />
-                        <div>
-                          <strong>{d.unit_name}</strong>
-                          <p>
-                            {closed(report)
-                              ? "Response completed"
-                              : report.status === "on_scene"
-                                ? "At the incident"
-                                : liveMap?.incident_id === report.id &&
-                                    liveMap.routes.find(
-                                      (r) => r.unit_id === d.unit_id,
-                                    )
-                                  ? `Road ETA: ${liveMap.routes.find((r) => r.unit_id === d.unit_id).eta_minutes} min · ${liveMap.routes.find((r) => r.unit_id === d.unit_id).distance_km} km`
-                                  : `Assigned ETA: ${d.eta_minutes} min`}
-                          </p>
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <p>
-                      Your report is in the response queue. A fleet has not been
-                      assigned yet.
-                    </p>
-                  )}
-                </div>
-                {hasLocation && page === "tracking" && (
-                  <TacticalMap incident={report} height="280px" />
-                )}
-                <div className="destination">
-                  <span className="destination-pin">
-                    <Icon name="pin" size={22} />
-                  </span>
-                  <div>
-                    <span>REPORTED LOCATION</span>
-                    <strong>{report.location_name}</strong>
-                    <p>
-                      {hasLocation
-                        ? `${report.lat.toFixed(5)}, ${report.lng.toFixed(5)}${report.location_accuracy_m ? ` · ±${Math.round(report.location_accuracy_m)} m` : ""}`
-                        : "Address provided · GPS not shared"}
-                    </p>
-                  </div>
-                </div>
-              </section>
-              {!closed(report) && (
-                <div className="situation-updates">
-                  <button
-                    className="tracking-chat-link"
-                    aria-expanded={updateOpen}
-                    onClick={() => setUpdateOpen((v) => !v)}
-                  >
-                    <span className="shortcut-icon">
-                      <Icon name="send" size={22} />
-                    </span>
-                    <span>
-                      <strong>Has anything changed?</strong>
-                      <small>Send new details, a photo, or a voice note.</small>
-                    </span>
-                    <Icon name={updateOpen ? "minus" : "plus"} size={21} />
-                  </button>
-                  {updateOpen && (
-                    <ReportForm
-                      active={page === "tracking" && updateOpen}
-                      isUpdate
-                      onSubmit={updateReport}
-                      reporterName={reporterName}
-                    />
-                  )}
-                </div>
-              )}
-              {!!report.updates?.length && (
-                <section className="surface reporter-update-history">
-                  <h2>Your situation updates</h2>
-                  {[...report.updates].reverse().map((u, index) => (
-                    <div key={index}>
-                      <small>{new Date(u.timestamp).toLocaleString()}</small>
-                      <p>{u.description || "Media update"}</p>
-                      <span>
-                        {u.attachments.length
-                          ? `${u.attachments.length} attachment(s)`
-                          : ""}
-                      </span>
-                    </div>
-                  ))}
-                </section>
-              )}
-            </>
-          )}
-        </section>
-        <section hidden={page !== "chat"} className="screen chat-screen">
-          <PageHeading
-            eyebrow="YOU DON’T HAVE TO WAIT ALONE"
-            title="A little support"
-          >
-            Ask a question. We’re right here with you.
-          </PageHeading>
-          <Assistant
-            active={page === "chat"}
-            remaining={0}
-            report={report}
-            trackingStarted={false}
-            onReportUpdate={report && !closed(report) ? updateReport : null}
-          />
-        </section>
-        <section hidden={page !== "profile"} className="screen profile-screen">
-          <PageHeading eyebrow="YOUR REPORTER SPACE" title="Your profile">
-            The details that keep everything connected.
-          </PageHeading>
-          <section className="surface profile-card">
-            <span className="large-avatar">{initials}</span>
-            <form
-              className="name-form"
-              onSubmit={(e) => {
-                e.preventDefault();
-                sessionStorage.setItem("teevra.name", reporterName);
-                setNotice("Your name is saved for this session.");
-              }}
-            >
-              <label htmlFor="reporter-name">Your name</label>
-              <input
-                id="reporter-name"
-                value={reporterName}
-                onChange={(e) => setReporterName(e.target.value)}
-                required
-                maxLength={80}
-              />
-              <button className="primary-button blue-button">Save name</button>
-            </form>
-            {notice && <p role="status">{notice}</p>}
-            {report && (
-              <p>
-                Latest report: {report.id}
-                <br />
-                Callback: {report.reporter_phone}
-              </p>
-            )}
-          </section>
-        </section>
-        <p className="demo-footnote">
-          Prototype · Demo fleets are labelled; road ETAs exclude live traffic.
-          For a real emergency, call your local emergency service.
-        </p>
-      </main>
-      <nav className="bottom-nav" aria-label="Main navigation">
-        <div className="bottom-nav-inner">
-          {navigation.map((n) => (
-            <button
-              key={n.id}
-              className={`bottom-nav-item ${page === n.id ? "active" : ""} ${n.id === "report" ? "nav-report" : ""}`}
-              aria-current={page === n.id ? "page" : undefined}
-              onClick={() => navigate(n.id)}
-            >
-              {n.id === "report" ? (
-                <span className="report-fab">
-                  <Icon name="send" size={27} />
-                  <span>Report</span>
-                </span>
-              ) : (
-                <>
-                  <span className="nav-icon">
-                    <Icon name={n.icon} size={24} />
-                  </span>
-                  <span>{n.label}</span>
-                </>
-              )}
-            </button>
-          ))}
-        </div>
-      </nav>
-    </div>
-  );
+        {profileTab === "details" ? <form className="reporter-details-form" onSubmit={(event) => {
+          event.preventDefault();
+          localStorage.setItem("teevra.name", reporterName.trim());
+          localStorage.setItem("teevra.phone", reporterPhone.trim());
+          setProfileNotice("Saved on this device.");
+        }}>
+          <label htmlFor="profile-name">Name</label><input id="profile-name" value={reporterName} onChange={(event) => setReporterName(event.target.value)} maxLength={80} autoComplete="name" />
+          <label htmlFor="profile-phone">Phone number</label><input id="profile-phone" type="tel" value={reporterPhone} onChange={(event) => setReporterPhone(event.target.value)} maxLength={22} autoComplete="tel" />
+          <button className="primary-button blue-button">Save details</button>{profileNotice && <p role="status">{profileNotice}</p>}
+        </form> : <div className="reporter-history">
+          {profileNotice && <p role="status">{profileNotice}</p>}
+          {historyReports.length ? historyReports.map((item) => <button key={item.id} type="button" onClick={() => openTracking(item)}>
+            <span><strong>{item.id}</strong><small>{new Date(item.created_at).toLocaleString("en-IN")}</small></span>
+            <span>{statusLabel(item.status)} <Icon name="chevron" size={18} /></span>
+          </button>) : <p>No reports on this device yet.</p>}
+          {report && closed(report) && <button type="button" className="reporter-new-chat" onClick={() => {
+            if (!archiveChatHistory(localStorage)) { setProfileNotice("Could not save the previous chat on this device."); return; }
+            localStorage.removeItem("teevra.incident"); sessionStorage.removeItem("teevra.incident");
+            setIncidentId(""); setReport(null); setLiveMap(null); setConversationKey((n) => n + 1); setPage("chat");
+          }}>Start a new report</button>}
+        </div>}
+      </section>}
+    </main>
+  </div>;
 }

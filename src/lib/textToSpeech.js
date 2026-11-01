@@ -20,7 +20,7 @@ export function createSpeechPlayback(browser, onChange, apiBase = "") {
     onChange({ playingId: null, error: "" });
   }
 
-  async function speak(id, text, rate = 1) {
+  async function speak(id, text, rate = 1, onComplete, onFailure) {
     stop();
     if (!supported || !text.trim()) return;
     const next = { controller: new AbortController() };
@@ -45,19 +45,21 @@ export function createSpeechPlayback(browser, onChange, apiBase = "") {
       next.url = browser.URL.createObjectURL(blob);
       next.audio = new browser.Audio(next.url);
       next.audio.playbackRate = rate;
-      next.audio.onended = () => { if (current === next) stop(); };
+      next.audio.onended = () => { if (current === next) { stop(); onComplete?.(); } };
       next.audio.onerror = () => {
         if (current !== next) return;
         stop();
         onChange({ playingId: null, error: "Could not play this reply. Try again." });
+        onFailure?.();
       };
       await next.audio.play();
     } catch (error) {
       if (current !== next) return;
       stop();
       onChange({ playingId: null, error: error.name === "NotAllowedError"
-        ? "Your browser blocked automatic audio. Select Read aloud to play the reply."
+        ? "Your browser blocked automatic audio. Select the speaker icon to play the reply."
         : error.message || "Speech generation failed. Try again." });
+      onFailure?.();
     }
   }
 

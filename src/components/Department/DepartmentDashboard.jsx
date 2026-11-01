@@ -87,14 +87,26 @@ export default function DepartmentDashboard() {
   }, []);
   useEffect(() => {
     alive.current = true;
-    const initial = setTimeout(refresh, 0);
-    const poll = setInterval(refresh, 3000);
+    let stopped = false;
+    let poll;
+    let inFlight = false;
+    async function refreshLoop() {
+      if (stopped || document.hidden || inFlight) return;
+      inFlight = true;
+      await refresh();
+      inFlight = false;
+      if (!stopped && !document.hidden) poll = setTimeout(refreshLoop, 5000);
+    }
+    function visibilityChanged() { clearTimeout(poll); if (!document.hidden) refreshLoop(); }
+    document.addEventListener("visibilitychange", visibilityChanged);
+    refreshLoop();
     const tick = setInterval(() => setNow(Date.now()), 1000);
     return () => {
+      stopped = true;
       alive.current = false;
-      clearTimeout(initial);
-      clearInterval(poll);
+      clearTimeout(poll);
       clearInterval(tick);
+      document.removeEventListener("visibilitychange", visibilityChanged);
     };
   }, [refresh]);
 
