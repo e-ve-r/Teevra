@@ -125,6 +125,8 @@ class IncidentCreateRequest(BaseModel):
 
 
 class IncidentUpdateRequest(BaseModel):
+    defer_assessment: bool = False
+    update_id: Optional[UUID] = None
     description: str = Field(default="", max_length=2000)
     attachments: List[Attachment] = Field(default_factory=list, max_length=10)
     lat: Optional[float] = Field(default=None, ge=-90, le=90)
@@ -142,6 +144,7 @@ class IncidentUpdateRequest(BaseModel):
 
 
 class IncidentUpdate(BaseModel):
+    update_id: Optional[UUID] = None
     timestamp: str
     description: str
     attachments: List[Attachment] = Field(default_factory=list)

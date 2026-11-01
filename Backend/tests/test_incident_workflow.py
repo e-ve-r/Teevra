@@ -305,6 +305,37 @@ class IncidentWorkflowTests(unittest.TestCase):
         self.assertEqual(fallback.ai_confidence, 0)
         Path(main.__file__).resolve().parent.parent.joinpath(response.json()["url"].lstrip("/")).unlink()
 
+    def test_deferred_update_is_available_before_assessment_finishes(self):
+        incident = self.create()
+        async def run():
+            started = asyncio.Event()
+            release = asyncio.Event()
+            async def slow_assessment(**kwargs):
+                started.set()
+                await release.wait()
+                return rule_based_triage(kwargs["description"])
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.client.app), base_url="http://test") as client:
+                with patch.object(main, "evaluate_incident_ai", side_effect=slow_assessment):
+                    response = await client.post(f'/api/incidents/{incident["id"]}/updates', json={"description": "New information", "defer_assessment": True})
+                    self.assertEqual(response.status_code, 200)
+                    await asyncio.wait_for(started.wait(), 1)
+                    saved = await client.get(f'/api/incidents/{incident["id"]}')
+                    self.assertEqual(saved.json()["updates"][-1]["description"], "New information")
+                    release.set()
+        asyncio.run(run())
+
+    def test_retrying_same_update_does_not_duplicate_it(self):
+        import uuid
+        incident = self.create()
+        url = f'/api/incidents/{incident["id"]}/updates'
+        payload = {"update_id": str(uuid.uuid4()), "description": "Condition has changed"}
+        self.assertEqual(self.client.post(url, json=payload).status_code, 200)
+        self.assertEqual(self.client.post(url, json=payload).status_code, 200)
+        saved = self.client.get(f'/api/incidents/{incident["id"]}').json()
+        self.assertEqual(len(saved["updates"]), 1)
+        self.assertEqual(saved["revision"], 1)
+        self.assertEqual(self.client.post(url, json={**payload, "description": "Different"}).status_code, 409)
+
     def test_concurrent_updates_preserve_history_and_assessment_order(self):
         incident = self.create()
         async def run_updates():

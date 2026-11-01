@@ -1,6 +1,8 @@
 // Playback uses server-generated audio; the API key stays on the server.
 export function createSpeechPlayback(browser, onChange, apiBase = "") {
-  const supported = Boolean(browser?.Audio && browser?.fetch && browser?.URL?.createObjectURL);
+  const supported = Boolean(
+    browser?.Audio && browser?.fetch && browser?.URL?.createObjectURL,
+  );
   let current = null;
 
   function stop() {
@@ -35,7 +37,9 @@ export function createSpeechPlayback(browser, onChange, apiBase = "") {
       });
       if (!response.ok) {
         const body = await response.json().catch(() => null);
-        throw new Error(body?.detail || "Speech generation is unavailable. Try again.");
+        throw new Error(
+          body?.detail || "Speech generation is unavailable. Try again.",
+        );
       }
       const blob = await response.blob();
       if (current !== next) return;
@@ -45,20 +49,32 @@ export function createSpeechPlayback(browser, onChange, apiBase = "") {
       next.url = browser.URL.createObjectURL(blob);
       next.audio = new browser.Audio(next.url);
       next.audio.playbackRate = rate;
-      next.audio.onended = () => { if (current === next) { stop(); onComplete?.(); } };
+      next.audio.onended = () => {
+        if (current === next) {
+          stop();
+          onComplete?.();
+        }
+      };
       next.audio.onerror = () => {
         if (current !== next) return;
         stop();
-        onChange({ playingId: null, error: "Could not play this reply. Try again." });
+        onChange({
+          playingId: null,
+          error: "Could not play this reply. Try again.",
+        });
         onFailure?.();
       };
       await next.audio.play();
     } catch (error) {
       if (current !== next) return;
       stop();
-      onChange({ playingId: null, error: error.name === "NotAllowedError"
-        ? "Your browser blocked automatic audio. Select the speaker icon to play the reply."
-        : error.message || "Speech generation failed. Try again." });
+      onChange({
+        playingId: null,
+        error:
+          error.name === "NotAllowedError"
+            ? "Your browser blocked automatic audio. Select the speaker icon to play the reply."
+            : error.message || "Speech generation failed. Try again.",
+      });
       onFailure?.();
     }
   }

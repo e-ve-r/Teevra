@@ -1,10 +1,8 @@
-"""Verify voice chat uses free models, bounded uploads, and safe provider errors."""
-import base64
+"""Verify voice chat uses local models, bounded uploads, and safe provider errors."""
 import io
 import unittest
 import wave
-from unittest.mock import AsyncMock
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch, MagicMock
 from types import SimpleNamespace
 
 import httpx
@@ -33,7 +31,7 @@ def wav_bytes():
 
 class VoiceChatTests(unittest.TestCase):
     def setUp(self):
-        self.app = create_app(Settings(_env_file=None, openrouter_api_key=SecretStr("test-key"), gemini_key=SecretStr("gemini-test-key"), routing_base_url=""))
+        self.app = create_app(Settings(_env_file=None, routing_base_url=""))
         self.context = TestClient(self.app)
         self.client = self.context.__enter__()
         self.post = AsyncMock()
@@ -42,16 +40,12 @@ class VoiceChatTests(unittest.TestCase):
     def tearDown(self):
         self.context.__exit__(None, None, None)
 
-    def test_transcription_sends_audio_to_free_multimodal_model(self):
-        self.post.return_value = provider_response(json={"candidates": [{"content": {"parts": [{"audioTranscription": {"text": "नमस्ते"}}]}}]})
+    @patch("Backend.main.transcribe_wav", return_value="नमस्ते")
+    def test_transcription_uses_local_whisper(self, mock_transcribe):
         data = wav_bytes()
         response = self.client.post("/api/chat/transcribe", files={"audio": ("voice.wav", data, "audio/wav")})
         self.assertEqual(response.json(), {"text": "नमस्ते"})
-        call = self.post.await_args.kwargs["json"]
-        self.assertIn("gemini-3.5-transcribe", self.post.await_args.args[0])
-        part = call["contents"][0]["parts"][0]["inlineData"]
-        self.assertEqual(part["mimeType"], "audio/wav")
-        self.assertEqual(base64.b64decode(part["data"]), data)
+        mock_transcribe.assert_called_once_with(data)
 
     def test_rejects_bad_audio_before_calling_provider(self):
         response = self.client.post("/api/chat/transcribe", files={"audio": ("bad.wav", b"nope", "audio/wav")})
@@ -61,49 +55,49 @@ class VoiceChatTests(unittest.TestCase):
         self.assertEqual(response.status_code, 413)
         self.post.assert_not_awaited()
 
-    def test_speech_returns_audio_from_gemini(self):
+    @patch("Backend.main.transcribe_wav", return_value="मुझे मदद चाहिए")
+    def test_transcription_passes_selected_hindi_language(self, mock_transcribe):
+        data = wav_bytes()
+        response = self.client.post("/api/chat/transcribe", data={"language": "hi-IN"}, files={"audio": ("voice.wav", data, "audio/wav")})
+        self.assertEqual(response.status_code, 200)
+        mock_transcribe.assert_called_once_with(data, "hi-IN")
+
+    @patch("Backend.main.synthesize_speech")
+    def test_speech_returns_audio_from_kokoro(self, mock_synthesize):
         sound = wav_bytes()
-        self.post.return_value = provider_response(json={"candidates": [{"content": {"parts": [{"inlineData": {
-            "mimeType": "audio/wav", "data": base64.b64encode(sound).decode(),
-        }}]}}]})
+        mock_synthesize.return_value = sound
         response = self.client.post("/api/chat/speech", json={"text": "नमस्ते"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content, sound)
         self.assertEqual(response.headers["content-type"], "audio/wav")
-        self.assertIn("gemini-3.8-flash-lite-tts", self.post.await_args.args[0])
-        call = self.post.await_args.kwargs["json"]
-        self.assertEqual(call["contents"][0]["parts"][0]["text"], "नमस्ते")
-        self.assertEqual(call["generationConfig"]["responseModalities"], ["AUDIO"])
+        mock_synthesize.assert_called_once_with("नमस्ते")
 
-    def test_raw_pcm_is_wrapped_in_wav(self):
-        self.post.return_value = provider_response(json={"candidates": [{"content": {"parts": [{"inlineData": {
-            "mimeType": "audio/L16;rate=24000", "data": base64.b64encode(b"\x00\x01" * 20).decode(),
-        }}]}}]})
-        response = self.client.post("/api/chat/speech", json={"text": "Hello"})
-        self.assertEqual(response.status_code, 200)
-        with wave.open(io.BytesIO(response.content), "rb") as sound:
-            self.assertEqual(sound.getframerate(), 24000)
-            self.assertEqual(sound.getnframes(), 20)
-
-    def test_provider_failures_and_invalid_audio_are_not_treated_as_speech(self):
-        self.post.return_value = provider_response(status=429, json={"error": "sensitive upstream detail"})
+    @patch("Backend.main.synthesize_speech", side_effect=ValueError("Speech synthesis produced no audio."))
+    def test_speech_failure_returns_502(self, mock_synthesize):
         response = self.client.post("/api/chat/speech", json={"text": "hello"})
-        self.assertEqual(response.status_code, 429)
-        self.assertNotIn("sensitive", response.text)
-        self.post.return_value = provider_response(json={"error": "invalid audio"})
-        self.assertEqual(self.client.post("/api/chat/speech", json={"text": "hello"}).status_code, 502)
+        self.assertEqual(response.status_code, 502)
 
-    def test_invalid_gemini_key_is_reported(self):
-        self.post.return_value = provider_response(status=403, json={"error": {"message": "private details"}})
+    @patch("Backend.main.synthesize_speech", side_effect=RuntimeError("Model files not found"))
+    def test_speech_missing_model_returns_503(self, mock_synthesize):
+        response = self.client.post("/api/chat/speech", json={"text": "hello"})
+        self.assertEqual(response.status_code, 503)
+
+    @patch("Backend.main.transcribe_wav", side_effect=ValueError("No speech detected"))
+    def test_transcription_failure_returns_502(self, mock_transcribe):
+        response = self.client.post("/api/chat/transcribe", files={"audio": ("voice.wav", wav_bytes(), "audio/wav")})
+        self.assertEqual(response.status_code, 502)
+
+    @patch("Backend.main.transcribe_wav", side_effect=RuntimeError("Model not loaded"))
+    def test_transcription_missing_model_returns_503(self, mock_transcribe):
         response = self.client.post("/api/chat/transcribe", files={"audio": ("voice.wav", wav_bytes(), "audio/wav")})
         self.assertEqual(response.status_code, 503)
-        self.assertIn("Gemini", response.json()["detail"])
-        self.assertNotIn("private details", response.text)
 
     def test_chat_uses_local_ollama_and_selected_reply_language(self):
         self.post.return_value = provider_response(json={"choices": [{"message": {"content": "नमस्ते"}}]})
         response = self.client.post("/api/chat", json={"messages": [{"role": "user", "content": "Hello"}], "reply_language": "Hindi"})
-        self.assertEqual(response.json(), {"reply": "नमस्ते", "recommend_report": False})
+        self.assertEqual(response.json()["reply"], "नमस्ते")
+        self.assertFalse(response.json()["recommend_report"])
+        self.assertIsNone(response.json()["tool_call"])
         call = self.post.await_args.kwargs["json"]
         self.assertEqual(call["model"], "llama3.2")
         self.assertEqual(self.post.await_args.args[0], "http://127.0.0.1:11434/v1/chat/completions")
@@ -113,8 +107,93 @@ class VoiceChatTests(unittest.TestCase):
         self.post.return_value = provider_response(json={"choices": [{"message": {"content": "Please review a report. [[REPORT_RECOMMENDED]]"}}]})
         with patch.object(store, "create_incident") as create:
             response = self.client.post("/api/chat", json={"messages": [{"role": "user", "content": "I want to report a fall"}]})
-        self.assertEqual(response.json(), {"reply": "Please review a report.", "recommend_report": True})
+        data = response.json()
+        self.assertEqual(data["reply"], "Please review a report.")
+        self.assertTrue(data["recommend_report"])
+        self.assertIsNone(data["tool_call"])
         create.assert_not_called()
+
+    def test_report_request_can_gather_condition_before_review(self):
+        self.post.return_value = provider_response(json={"choices": [{"message": {"content": "How are you feeling now?"}}]})
+        response = self.client.post("/api/chat", json={"messages": [{"role": "user", "content": "I want to report a fall"}]})
+        self.assertEqual(response.json()["reply"], "How are you feeling now?")
+        self.assertIsNone(response.json()["tool_call"])
+        prompt = self.post.await_args.kwargs["json"]["messages"][0]["content"]
+        self.assertIn("current condition", prompt)
+        self.assertIn("ordinary conversation", prompt)
+
+    def test_ollama_tool_call_opens_report_form_with_user_details(self):
+        self.post.return_value = provider_response(json={
+            "choices": [{
+                "message": {
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "open_report_form",
+                            "arguments": '{"summary": "Vehicle collision with minor injuries", "location": "MG Road, Pune", "reporter_name": "Aditi", "reporter_phone": "9876543210"}'
+                        }
+                    }]
+                }
+            }]
+        })
+        response = self.client.post("/api/chat", json={"messages": [{"role": "user", "content": "Please report a crash on MG Road Pune. My name is Aditi and my number is 9876543210"}]})
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["recommend_report"])
+        self.assertIsNotNone(data["tool_call"])
+        self.assertEqual(data["tool_call"]["name"], "open_report_form")
+        self.assertEqual(data["tool_call"]["arguments"]["summary"], "Vehicle collision with minor injuries")
+        self.assertEqual(data["tool_call"]["arguments"]["location"], "MG Road, Pune")
+        self.assertEqual(data["tool_call"]["arguments"]["reporter_name"], "Aditi")
+        self.assertEqual(data["tool_call"]["arguments"]["reporter_phone"], "9876543210")
+        self.assertIn("report", data["reply"].lower())
+
+    def test_missing_reporter_name_is_requested_before_review(self):
+        self.post.return_value = provider_response(json={"choices": [{"message": {"content": "", "tool_calls": [{"function": {"name": "open_report_form", "arguments": {"summary": "Fall, knee hurts", "location": "MG Road", "reporter_phone": "9876543210", "reporter_name": ""}}}]}}]})
+        response = self.client.post("/api/chat", json={"messages": [{"role": "user", "content": "I fell, my knee hurts. MG Road. My number is 9876543210"}]})
+        self.assertEqual(response.json()["tool_call"]["arguments"]["reporter_name"], "")
+        self.assertIn("confirm", response.json()["reply"])
+
+    def test_malformed_text_tool_call_is_not_shown_to_user(self):
+        content = '{"name": open_report_form, "parameters": {"summary": "fell off stairs", "location": "", "reporter_name": "", "reporter_phone": ""}}'
+        self.post.return_value = provider_response(json={"choices": [{"message": {"content": content}}]})
+        response = self.client.post("/api/chat", json={"messages": [{"role": "user", "content": "I fell off stairs"}]})
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("open_report_form", response.json()["reply"])
+        self.assertIsNotNone(response.json()["tool_call"])
+        self.assertIn("confirm", response.json()["reply"])
+
+    def test_repeated_questions_open_review_after_phone_is_provided(self):
+        self.post.return_value = provider_response(json={"choices": [{"message": {"content": "What is your address and phone number?"}}]})
+        messages = [
+            {"role": "user", "content": "I want to report a fall; my knee hurts."},
+            {"role": "assistant", "content": "What is your name and phone number?"},
+            {"role": "user", "content": "Aditi, 9876543210"},
+            {"role": "assistant", "content": "What is the location?"},
+            {"role": "user", "content": "MG Road, Pune"},
+        ]
+        with patch.object(store, "create_incident") as create:
+            response = self.client.post("/api/chat", json={"messages": messages})
+        self.assertEqual(response.json()["tool_call"]["name"], "open_report_form")
+        self.assertEqual(response.json()["tool_call"]["arguments"]["reporter_phone"], "9876543210")
+        create.assert_not_called()
+
+    def test_reformatted_contact_does_not_block_review(self):
+        self.post.return_value = provider_response(json={"choices": [{"message": {"content": "", "tool_calls": [{"function": {"name": "open_report_form", "arguments": {"summary": "Fall", "location": "Road 1, New Delhi", "reporter_name": "Aditi Sharma", "reporter_phone": "+91 9876543210"}}}]}}]})
+        response = self.client.post("/api/chat", json={"messages": [{"role": "user", "content": "I fell. I am Aditi, at 1 Road, Delhi. My number is 9876543210."}]})
+        args = response.json()["tool_call"]["arguments"]
+        self.assertEqual(args["reporter_phone"], "9876543210")
+        self.assertEqual(args["location"], "")
+        self.assertEqual(args["reporter_name"], "")
+
+    def test_unparseable_text_tool_call_is_hidden_and_asks_condition(self):
+        self.post.return_value = provider_response(json={"choices": [{"message": {"content": '{"name": open_report_form, broken'}}]})
+        response = self.client.post("/api/chat", json={"messages": [{"role": "user", "content": "I fell"}]})
+        self.assertNotIn("open_report_form", response.json()["reply"])
+        self.assertIn("feeling", response.json()["reply"])
+        self.assertIsNone(response.json()["tool_call"])
 
     def test_report_summary_uses_full_conversation_without_creating_report(self):
         history = [{"role": "user", "content": "I fell from a bicycle."},
@@ -164,6 +243,7 @@ class VoiceChatTests(unittest.TestCase):
         self.assertTrue(response.json()["recommend_report"])
 
     def test_chat_uses_moondream_and_reuses_image_description(self):
+        import base64
         image = self.client.post("/api/upload", files={"file": ("test.png", b"image bytes", "image/png")}).json()
         async def local_model(url, **kwargs):
             if url.endswith("/api/chat"):

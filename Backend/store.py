@@ -125,8 +125,14 @@ class IncidentStore:
                 raise KeyError("Incident not found")
             if incident.status.value in CLOSED:
                 raise ValueError("This incident is closed. Submit a new report.")
-            updates = [u.model_dump() for u in incident.updates]
-            updates.append({"timestamp": now_iso(), "description": req.description.strip(), "attachments": [a.model_dump() for a in req.attachments]})
+            if req.update_id:
+                existing = next((u for u in incident.updates if u.update_id == req.update_id), None)
+                if existing:
+                    if existing.description != req.description.strip() or existing.attachments != req.attachments:
+                        raise ValueError("This update ID was already used with different details.")
+                    return incident
+            updates = [u.model_dump(mode="json") for u in incident.updates]
+            updates.append({"update_id": str(req.update_id) if req.update_id else None, "timestamp": now_iso(), "description": req.description.strip(), "attachments": [a.model_dump() for a in req.attachments]})
             attachments = [a.model_dump() for a in incident.attachments + req.attachments]
             conn = get_db_connection()
             with conn:

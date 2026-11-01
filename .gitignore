@@ -46,6 +46,7 @@ __pycache__/
 *.db
 *.db-*
 Backend/*.db*
+Backend/models/
 uploads/
 recordings/
 

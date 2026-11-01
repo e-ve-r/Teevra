@@ -8,18 +8,31 @@ function setup() {
   const revoked = [];
   const calls = [];
   class Audio {
-    constructor(url) { this.url = url; audios.push(this); }
-    async play() { this.played = true; }
-    pause() { this.paused = true; }
+    constructor(url) {
+      this.url = url;
+      audios.push(this);
+    }
+    async play() {
+      this.played = true;
+    }
+    pause() {
+      this.paused = true;
+    }
     removeAttribute() {}
     load() {}
   }
   const browser = {
     Audio,
-    URL: { createObjectURL: () => "blob:test", revokeObjectURL: (url) => revoked.push(url) },
+    URL: {
+      createObjectURL: () => "blob:test",
+      revokeObjectURL: (url) => revoked.push(url),
+    },
     fetch: async (url, options) => {
       calls.push({ url, options });
-      return { ok: true, blob: async () => new Blob(["audio"], { type: "audio/mpeg" }) };
+      return {
+        ok: true,
+        blob: async () => new Blob(["audio"], { type: "audio/mpeg" }),
+      };
     },
   };
   const player = createSpeechPlayback(browser, (state) => states.push(state));
@@ -42,10 +55,16 @@ test("requests generated audio for the reply and plays it at the chosen speed", 
 test("switching or stopping cancels playback and ignores stale responses", async () => {
   const { player, browser, states, audios } = setup();
   let resolveFirst;
-  browser.fetch = () => new Promise((resolve) => { resolveFirst = resolve; });
+  browser.fetch = () =>
+    new Promise((resolve) => {
+      resolveFirst = resolve;
+    });
   const pending = player.speak("first", "First");
   player.stop();
-  resolveFirst({ ok: true, blob: async () => new Blob(["audio"], { type: "audio/mpeg" }) });
+  resolveFirst({
+    ok: true,
+    blob: async () => new Blob(["audio"], { type: "audio/mpeg" }),
+  });
   await pending;
   assert.equal(audios.length, 0);
   assert.deepEqual(states.at(-1), { playingId: null, error: "" });
@@ -53,11 +72,16 @@ test("switching or stopping cancels playback and ignores stale responses", async
 
 test("provider errors and autoplay blocking leave a retryable state", async () => {
   const { player, browser, states } = setup();
-  browser.fetch = async () => ({ ok: false, json: async () => ({ detail: "Free model is rate limited." }) });
+  browser.fetch = async () => ({
+    ok: false,
+    json: async () => ({ detail: "Free model is rate limited." }),
+  });
   await player.speak("reply", "Hello");
   assert.match(states.at(-1).error, /rate limited/);
   const other = setup();
-  other.browser.Audio.prototype.play = async () => { throw Object.assign(new Error("blocked"), { name: "NotAllowedError" }); };
+  other.browser.Audio.prototype.play = async () => {
+    throw Object.assign(new Error("blocked"), { name: "NotAllowedError" });
+  };
   await other.player.speak("reply", "Hello");
   assert.match(other.states.at(-1).error, /blocked automatic audio/);
   assert.deepEqual(other.revoked, ["blob:test"]);
@@ -65,7 +89,10 @@ test("provider errors and autoplay blocking leave a retryable state", async () =
 
 test("rejects invalid audio and supports browsers without audio playback", async () => {
   const { player, browser, states } = setup();
-  browser.fetch = async () => ({ ok: true, blob: async () => new Blob(["error"], { type: "application/json" }) });
+  browser.fetch = async () => ({
+    ok: true,
+    blob: async () => new Blob(["error"], { type: "application/json" }),
+  });
   await player.speak("reply", "Hello");
   assert.match(states.at(-1).error, /invalid speech audio/);
   assert.equal(createSpeechPlayback(null, () => {}).supported, false);
@@ -74,10 +101,14 @@ test("rejects invalid audio and supports browsers without audio playback", async
 test("voice conversation continues only after a reply finishes naturally", async () => {
   const { player, audios } = setup();
   let completed = 0;
-  await player.speak("reply", "Hello", 1, () => { completed += 1; });
+  await player.speak("reply", "Hello", 1, () => {
+    completed += 1;
+  });
   player.stop();
   assert.equal(completed, 0);
-  await player.speak("next", "Hello again", 1, () => { completed += 1; });
+  await player.speak("next", "Hello again", 1, () => {
+    completed += 1;
+  });
   audios[1].onended();
   assert.equal(completed, 1);
 });

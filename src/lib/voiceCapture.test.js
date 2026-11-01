@@ -7,46 +7,100 @@ function setup({ deny = false, meterFails = false, fetchResult } = {}) {
   const transcripts = [];
   const errors = [];
   const requests = [];
-  const tracks = [{ stopped: false, stop() { this.stopped = true; } }];
+  const tracks = [
+    {
+      stopped: false,
+      stop() {
+        this.stopped = true;
+      },
+    },
+  ];
   const stream = { getTracks: () => tracks };
   const recorders = [];
   class MediaRecorder {
-    constructor() { this.state = "inactive"; this.mimeType = "audio/webm"; recorders.push(this); }
-    start() { this.state = "recording"; }
+    constructor() {
+      this.state = "inactive";
+      this.mimeType = "audio/webm";
+      recorders.push(this);
+    }
+    start() {
+      this.state = "recording";
+    }
     stop() {
       this.state = "inactive";
       queueMicrotask(() => {
-        this.ondataavailable?.({ data: new Blob(["recorded audio"], { type: this.mimeType }) });
+        this.ondataavailable?.({
+          data: new Blob(["recorded audio"], { type: this.mimeType }),
+        });
         this.onstop?.();
       });
     }
   }
   class AudioContext {
-    constructor() { if (meterFails) throw new Error("meter unavailable"); }
-    createAnalyser() { return { fftSize: 0, getFloatTimeDomainData() {} }; }
-    createMediaStreamSource() { return { connect() {} }; }
-    resume() { return Promise.resolve(); }
-    close() { return Promise.resolve(); }
+    constructor() {
+      if (meterFails) throw new Error("meter unavailable");
+    }
+    createAnalyser() {
+      return { fftSize: 0, getFloatTimeDomainData() {} };
+    }
+    createMediaStreamSource() {
+      return { connect() {} };
+    }
+    resume() {
+      return Promise.resolve();
+    }
+    close() {
+      return Promise.resolve();
+    }
   }
   const browser = {
-    navigator: { mediaDevices: { getUserMedia: async () => {
-      if (deny) throw Object.assign(new Error("denied"), { name: "NotAllowedError" });
-      return stream;
-    } } },
-    MediaRecorder, AudioContext, OfflineAudioContext: class {},
+    navigator: {
+      mediaDevices: {
+        getUserMedia: async () => {
+          if (deny)
+            throw Object.assign(new Error("denied"), {
+              name: "NotAllowedError",
+            });
+          return stream;
+        },
+      },
+    },
+    MediaRecorder,
+    AudioContext,
+    OfflineAudioContext: class {},
     performance: { now: () => 0 },
-    requestAnimationFrame: () => 1, cancelAnimationFrame() {},
-    setTimeout: () => 1, clearTimeout() {},
+    requestAnimationFrame: () => 1,
+    cancelAnimationFrame() {},
+    setTimeout: () => 1,
+    clearTimeout() {},
     fetch: async (url, options) => {
       requests.push({ url, options });
-      return fetchResult || { ok: true, json: async () => ({ text: "  नमस्ते  " }) };
+      return (
+        fetchResult || { ok: true, json: async () => ({ text: "  नमस्ते  " }) }
+      );
     },
   };
-  const capture = createVoiceCapture({ browser, apiBase: "https://example.test", toWav: async (blob) => {
-    assert.equal(await blob.text(), "recorded audio");
-    return new Blob(["wav"], { type: "audio/wav" });
-  }, onState: (state) => states.push(state), onTranscript: (text) => transcripts.push(text), onError: () => errors.push(true) });
-  return { capture, browser, states, transcripts, errors, requests, tracks, recorders };
+  const capture = createVoiceCapture({
+    browser,
+    apiBase: "https://example.test",
+    toWav: async (blob) => {
+      assert.equal(await blob.text(), "recorded audio");
+      return new Blob(["wav"], { type: "audio/wav" });
+    },
+    onState: (state) => states.push(state),
+    onTranscript: (text) => transcripts.push(text),
+    onError: () => errors.push(true),
+  });
+  return {
+    capture,
+    browser,
+    states,
+    transcripts,
+    errors,
+    requests,
+    tracks,
+    recorders,
+  };
 }
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -88,7 +142,10 @@ test("a quiet spoken turn is sent after a pause", async () => {
   let clock = 100;
   let level = 0.012;
   browser.performance.now = () => clock;
-  browser.requestAnimationFrame = (callback) => { frame = callback; return 1; };
+  browser.requestAnimationFrame = (callback) => {
+    frame = callback;
+    return 1;
+  };
   browser.AudioContext.prototype.createAnalyser = () => ({
     fftSize: 0,
     getFloatTimeDomainData: (values) => values.fill(level),
@@ -106,7 +163,10 @@ test("a quiet spoken turn is sent after a pause", async () => {
 test("a silent recording times out without requesting transcription", async () => {
   const { capture, browser, requests, states, tracks } = setup();
   let timeout;
-  browser.setTimeout = (callback) => { timeout = callback; return 1; };
+  browser.setTimeout = (callback) => {
+    timeout = callback;
+    return 1;
+  };
   await capture.start();
   timeout();
   await flush();
@@ -120,7 +180,12 @@ test("permission and transcription errors stop the session and explain the probl
   await denied.capture.start();
   assert.match(denied.states.at(-1).error, /denied/);
   assert.equal(denied.errors.length, 1);
-  const unavailable = setup({ fetchResult: { ok: false, json: async () => ({ detail: "Voice service unavailable." }) } });
+  const unavailable = setup({
+    fetchResult: {
+      ok: false,
+      json: async () => ({ detail: "Voice service unavailable." }),
+    },
+  });
   await unavailable.capture.start();
   unavailable.capture.finish();
   await flush();
@@ -130,13 +195,34 @@ test("permission and transcription errors stop the session and explain the probl
 
 test("cancelling while microphone permission is pending stops a late stream", async () => {
   let resolvePermission;
-  const tracks = [{ stopped: false, stop() { this.stopped = true; } }];
+  const tracks = [
+    {
+      stopped: false,
+      stop() {
+        this.stopped = true;
+      },
+    },
+  ];
   const browser = {
-    navigator: { mediaDevices: { getUserMedia: () => new Promise((resolve) => { resolvePermission = resolve; }) } },
-    MediaRecorder: class {}, AudioContext: class {}, OfflineAudioContext: class {},
-    clearTimeout() {}, cancelAnimationFrame() {},
+    navigator: {
+      mediaDevices: {
+        getUserMedia: () =>
+          new Promise((resolve) => {
+            resolvePermission = resolve;
+          }),
+      },
+    },
+    MediaRecorder: class {},
+    AudioContext: class {},
+    OfflineAudioContext: class {},
+    clearTimeout() {},
+    cancelAnimationFrame() {},
   };
-  const capture = createVoiceCapture({ browser, onState() {}, onTranscript() {} });
+  const capture = createVoiceCapture({
+    browser,
+    onState() {},
+    onTranscript() {},
+  });
   const pending = capture.start();
   capture.cancel();
   resolvePermission({ getTracks: () => tracks });

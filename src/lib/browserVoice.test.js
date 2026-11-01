@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createBrowserRecognition, createBrowserSpeechPlayback } from "./browserVoice.js";
+import {
+  createBrowserRecognition,
+  createBrowserSpeechPlayback,
+} from "./browserVoice.js";
 
 function recognitionSetup() {
   const instances = [];
@@ -8,13 +11,25 @@ function recognitionSetup() {
   const transcripts = [];
   const errors = [];
   class Recognition {
-    constructor() { instances.push(this); }
-    start() { this.onstart(); }
-    stop() { this.stopped = true; }
-    abort() { this.aborted = true; }
+    constructor() {
+      instances.push(this);
+    }
+    start() {
+      this.onstart();
+    }
+    stop() {
+      this.stopped = true;
+    }
+    abort() {
+      this.aborted = true;
+    }
   }
-  const capture = createBrowserRecognition({ browser: { webkitSpeechRecognition: Recognition },
-    onState: (state) => states.push(state), onTranscript: (text) => transcripts.push(text), onError: () => errors.push(true) });
+  const capture = createBrowserRecognition({
+    browser: { webkitSpeechRecognition: Recognition },
+    onState: (state) => states.push(state),
+    onTranscript: (text) => transcripts.push(text),
+    onError: () => errors.push(true),
+  });
   return { capture, instances, states, transcripts, errors };
 }
 
@@ -34,7 +49,8 @@ test("recognition submits one Hindi transcript after the user finishes", () => {
 });
 
 test("cancelled or denied recognition never sends a transcript", () => {
-  const { capture, instances, states, transcripts, errors } = recognitionSetup();
+  const { capture, instances, states, transcripts, errors } =
+    recognitionSetup();
   capture.start();
   capture.cancel();
   instances[0].onresult({ results: [[{ transcript: "ignored" }]] });
@@ -52,9 +68,21 @@ test("browser speech uses a matching voice and reports unavailable Hindi voices"
   const states = [];
   const spoken = [];
   const voices = [{ lang: "en-IN" }, { lang: "hi-IN" }];
-  const browser = { SpeechSynthesisUtterance: class { constructor(text) { this.text = text; } },
-    speechSynthesis: { getVoices: () => voices, speak: (utterance) => spoken.push(utterance), cancel() {} } };
-  const player = createBrowserSpeechPlayback(browser, (state) => states.push(state));
+  const browser = {
+    SpeechSynthesisUtterance: class {
+      constructor(text) {
+        this.text = text;
+      }
+    },
+    speechSynthesis: {
+      getVoices: () => voices,
+      speak: (utterance) => spoken.push(utterance),
+      cancel() {},
+    },
+  };
+  const player = createBrowserSpeechPlayback(browser, (state) =>
+    states.push(state),
+  );
   player.speak("a", "नमस्ते");
   assert.equal(spoken[0].voice.lang, "hi-IN");
   spoken[0].onend();
@@ -63,4 +91,14 @@ test("browser speech uses a matching voice and reports unavailable Hindi voices"
   player.speak("b", "नमस्ते");
   assert.match(states.at(-1).error, /No Hindi voice/);
   assert.equal(spoken.length, 1);
+});
+
+ test("English speech prefers an Indian English voice", () => {
+  const spoken = [];
+  const browser = {
+    SpeechSynthesisUtterance: class {},
+    speechSynthesis: { getVoices: () => [{ lang: "en-US" }, { lang: "en-IN" }], speak: (utterance) => spoken.push(utterance), cancel() {} },
+  };
+  createBrowserSpeechPlayback(browser, () => {}).speak("a", "How are you?");
+  assert.equal(spoken[0].voice.lang, "en-IN");
 });

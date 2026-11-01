@@ -20,7 +20,7 @@ OLLAMA_VISION_MODEL=moondream
 CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 ```
 
-When Ollama is unavailable, reports use a labelled rules assessment requiring operator review; chat reports an error and report summaries can be entered manually. The browser handles voice by default. The optional Gemini voice endpoints require a server-side `GEMINI_KEY` and explicit frontend selection; never expose keys in `VITE_` variables.
+When Ollama is unavailable, reports use a labelled rules assessment requiring operator review; chat reports an error and report summaries can be entered manually. Voice uses local Whisper and Piper. Install backend requirements and run `Backend/.venv/bin/python Backend/download_voices.py` to install the Hindi and Indian English voices. The Hindi voice dataset is CC BY-NC-SA 4.0 and the English model is AGPL-3.0; check their terms before deployment.
 
 ```sh
 Backend/.venv/bin/python -m uvicorn Backend.main:app --reload --reload-dir Backend --reload-exclude '**/.venv/**' --host 127.0.0.1 --port 8000
