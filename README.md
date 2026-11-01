@@ -61,3 +61,7 @@ On the responder dashboard, choose the correct fleet under **Fleet location**, t
 Set server-side `ROUTING_BASE_URL` to a compatible OSRM deployment; the default is `https://router.project-osrm.org`. Routes are cached for five minutes per exact coordinate pair and invalidated by movement; failures are cached for 30 seconds. Road ETA is route driving duration, without live traffic or mobilisation time. If routing fails, maps show positions without invented routes and fleet recommendations explicitly label approximate estimates. Unknown coordinates require a confirmed ETA.
 
 The default public OSRM and OpenStreetMap services are suitable for local prototype validation, not a guaranteed emergency-service dependency. Configure a production routing/tile service for deployment and follow the [OpenStreetMap tile policy](https://operations.osmfoundation.org/policies/tiles/). Routing sends fleet/incident coordinates to the configured server; map tiles request the displayed geographic area.
+
+## Mobile reporter app
+
+The reporter interface is also available as a React Native app in [`mobile/`](mobile/README.md). It supports iOS and Android, connects to this backend, and keeps the existing web responder workspace. See the mobile setup instructions for Expo Go, permissions, device-to-server networking, and native map configuration.

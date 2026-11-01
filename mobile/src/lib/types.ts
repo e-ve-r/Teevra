@@ -1,0 +1,12 @@
+export type Attachment = { id?: string; name: string; kind: 'image' | 'audio'; url?: string | null; size?: number | null };
+export type LocalAttachment = { uri: string; name: string; mimeType: string; kind: 'image' | 'audio'; size?: number; uploaded?: Attachment };
+export type Coordinates = { lat: number; lng: number; location_accuracy_m?: number };
+export type IncidentUpdate = { timestamp: string; description: string; attachments: Attachment[] };
+export type Dispatch = { unit_id: string; unit_name: string; eta_minutes: number };
+export type Incident = { id: string; reporter_name: string; reporter_phone: string; location_name: string; lat: number | null; lng: number | null; location_accuracy_m?: number | null; status: string; created_at: string; description: string; attachments: Attachment[]; dispatch?: Dispatch | null; dispatches?: Dispatch[]; updates?: IncidentUpdate[]; revision: number };
+export type Fleet = { id: string; name: string; lat: number | null; lng: number | null; location_source: string; location_updated_at?: string | null };
+export type RoadRoute = { unit_id: string; eta_minutes: number; distance_km: number; geometry: { type: 'LineString'; coordinates: number[][] } };
+export type IncidentMap = { incident_id: string; units: Fleet[]; routes: RoadRoute[]; routing_unavailable: boolean };
+export type ChatMessage = { role: 'user' | 'assistant'; content: string };
+export const statusLabel = (status: string) => ({ pending_triage: 'Assessing report', triage_complete: 'Awaiting assignment', dispatched: 'Assigned', en_route: 'On the way', on_scene: 'On scene', resolved: 'Resolved', cancelled: 'Cancelled' } as Record<string, string>)[status] || status;
+export const isClosed = (report?: Incident | null) => !!report && ['resolved', 'cancelled'].includes(report.status);

@@ -1,0 +1,27 @@
+import { StyleSheet } from 'react-native';
+export const colors = { blue: '#1765f4', blueDark: '#12244d', red: '#ed2546', background: '#f7f9fd', white: '#fff', muted: '#7483a0', line: '#e5ebf5', pale: '#eef4ff', green: '#169654' };
+export const styles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: colors.background },
+  scroll: { paddingHorizontal: 22, paddingTop: 22, paddingBottom: 110, maxWidth: 720, width: '100%', alignSelf: 'center' },
+  brandRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 32 },
+  brand: { color: colors.blueDark, fontSize: 23, fontWeight: '800', letterSpacing: -0.8 },
+  badge: { color: colors.muted, fontSize: 10, letterSpacing: 1, fontWeight: '700', backgroundColor: '#edf3fc', paddingVertical: 6, paddingHorizontal: 9, borderRadius: 7 },
+  eyebrow: { color: '#6f8ab6', fontSize: 10, fontWeight: '700', letterSpacing: 1.5, marginBottom: 9 },
+  title: { fontSize: 34, fontWeight: '800', color: colors.blueDark, letterSpacing: -1.3, lineHeight: 43 },
+  subtitle: { color: colors.muted, fontSize: 15, lineHeight: 23, marginTop: 8, marginBottom: 25 },
+  card: { backgroundColor: colors.white, borderColor: colors.line, borderWidth: 1, borderRadius: 20, padding: 20, marginBottom: 16 },
+  heading: { fontSize: 19, fontWeight: '800', color: colors.blueDark },
+  body: { fontSize: 14, lineHeight: 22, color: '#647b9c' },
+  small: { fontSize: 12, lineHeight: 18, color: colors.muted },
+  label: { fontSize: 13, fontWeight: '700', color: colors.blueDark, marginBottom: 8, marginTop: 16 },
+  input: { borderWidth: 1, borderColor: colors.line, backgroundColor: '#f8faff', color: colors.blueDark, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, minHeight: 48 },
+  textArea: { minHeight: 120, textAlignVertical: 'top', paddingTop: 12 },
+  button: { minHeight: 52, borderRadius: 13, paddingHorizontal: 18, justifyContent: 'center', alignItems: 'center', flexDirection: 'row', gap: 8 },
+  buttonText: { color: colors.white, fontSize: 15, fontWeight: '700' },
+  secondary: { backgroundColor: '#eff5ff', borderColor: '#d7e6ff', borderWidth: 1 },
+  secondaryText: { color: colors.blue, fontWeight: '700', fontSize: 14 },
+  error: { color: '#bd3452', backgroundColor: '#fff0f4', overflow: 'hidden', borderRadius: 10, padding: 12, marginTop: 12, lineHeight: 19 },
+  notice: { color: '#147545', backgroundColor: '#eef9f2', overflow: 'hidden', borderRadius: 10, padding: 12, marginBottom: 14, lineHeight: 19 },
+  row: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  divider: { height: 1, backgroundColor: colors.line, marginVertical: 16 },
+});

@@ -1,0 +1,61 @@
+{
+  "expo": {
+    "name": "Teevra",
+    "slug": "teevra-reporter",
+    "scheme": "teevra",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "icon": "./assets/teevra.png",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.teevra.reporter",
+      "infoPlist": {
+        "NSAppTransportSecurity": {
+          "NSAllowsLocalNetworking": true
+        }
+      }
+    },
+    "android": {
+      "package": "com.teevra.reporter",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/teevra.png",
+        "backgroundColor": "#ffffff"
+      }
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Teevra uses photos you choose to document your report.",
+          "cameraPermission": "Teevra uses your camera to attach photos to an emergency report."
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Teevra uses your microphone to record a voice report."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Teevra uses your location to share where help is needed."
+        }
+      ],
+      "expo-secure-store",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ],
+      "expo-status-bar",
+      "expo-font",
+      "expo-asset"
+    ]
+  }
+}
