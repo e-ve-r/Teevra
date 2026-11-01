@@ -16,10 +16,12 @@ Create `Backend/.env` with your server-side configuration:
 ```dotenv
 OPENROUTER_API_KEY=your-key
 OPENROUTER_MODEL=google/gemma-4-31b-it
+OPENROUTER_CHAT_MODEL=openrouter/free
+GEMINI_KEY=your-google-gemini-key
 CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 ```
 
-The model ID is configurable and must be available to your provider account. Never expose the key in a `VITE_` variable. With no key or a failing triage provider, reports use a labelled rules assessment and require operator review. Chat returns an explicit error instead of a preset reply.
+`OPENROUTER_MODEL` controls incident triage and may be a paid model. `OPENROUTER_CHAT_MODEL` must be `openrouter/free` or a model ID ending in `:free`. Voice chat uses Gemini 3.5 Transcribe and Gemini 3.8 Flash-Lite TTS. Both have free tiers, subject to Google account eligibility and limits; paid Gemini projects can incur charges. Google may use free-tier content to improve its products. `GEMINI_API_KEY` and `GOOGLE_API_KEY` are also accepted if `GEMINI_KEY` is not set. Never expose keys in `VITE_` variables. With no key or a failing triage provider, reports use a labelled rules assessment and require operator review. Chat and voice return explicit errors when unavailable.
 
 ```sh
 Backend/.venv/bin/python -m uvicorn Backend.main:app --reload --reload-dir Backend --reload-exclude '**/.venv/**' --host 127.0.0.1 --port 8000
@@ -46,6 +48,8 @@ Then run `npm run dev` in another terminal. Open `/` for reporters and `/respond
 | `GET /api/department/stats` | Active incidents, priority counts and fleet availability. |
 | `POST /api/upload` | Upload image/audio files up to 20 MB each; return a durable `/uploads/...` reference. |
 | `POST /api/chat` | Generate guidance from bounded user/assistant message history. |
+| `POST /api/chat/transcribe` | Transcribe a bounded WAV recording with Gemini. |
+| `POST /api/chat/speech` | Generate WAV speech from bounded text with Gemini. |
 | `GET /api/health` | Process/configuration and department status; not a provider connectivity check. |
 
 ## Evaluation and updates

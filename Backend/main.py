@@ -1,7 +1,11 @@
 """FastAPI bridge to OpenRouter and Teevra Department Dispatch System."""
 
 import asyncio
+import base64
+import binascii
+import io
 import uuid
+import wave
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, List, Literal, Optional
@@ -10,7 +14,8 @@ import httpx
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from fastapi.responses import Response
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 if __package__:
@@ -35,11 +40,23 @@ class Settings(BaseSettings):
         env_file=Path(__file__).with_name(".env"), extra="ignore"
     )
     openrouter_api_key: SecretStr = SecretStr("")
+    gemini_key: SecretStr = SecretStr("")
+    gemini_api_key: SecretStr = SecretStr("")
+    google_api_key: SecretStr = SecretStr("")
     openrouter_model: str = Field(default="google/gemma-4-31b-it", min_length=1)
+    openrouter_chat_model: str = "openrouter/free"
     openrouter_timeout_seconds: float = Field(default=45, gt=0, le=120)
     openrouter_max_tokens: int = Field(default=512, ge=1, le=2048)
     routing_base_url: str = "https://router.project-osrm.org"
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+
+    @field_validator("openrouter_chat_model")
+    @classmethod
+    def voice_models_must_be_free(cls, value):
+        value = value.strip()
+        if value != "openrouter/free" and not value.endswith(":free"):
+            raise ValueError("Voice chat models must be OpenRouter free models.")
+        return value
 
 
 class Message(BaseModel):
@@ -60,6 +77,7 @@ class ChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     messages: Annotated[list[Message], Field(min_length=1, max_length=20)]
     context: ChatContext = Field(default_factory=ChatContext)
+    reply_language: Literal["auto", "English", "Hindi", "Spanish", "French", "Bengali", "Tamil", "Telugu", "Marathi"] = "auto"
 
     @model_validator(mode="after")
     def validate_history(self):
@@ -72,6 +90,11 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     reply: str
+
+
+class SpeechRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    text: str = Field(min_length=1, max_length=3000)
 
 
 # Guidance references: Red Cross first-aid steps and AHA/Red Cross 2024 first-aid
@@ -191,8 +214,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         token = config.openrouter_api_key.get_secret_value().strip()
         if not token:
             raise HTTPException(503, "Chat is not configured. Set OPENROUTER_API_KEY in Backend/.env.")
+        language_instruction = (
+            "Respond in the language of the user's latest message."
+            if payload.reply_language == "auto"
+            else f"Respond in {payload.reply_language}. Translate the user's message mentally when necessary; do not omit urgent guidance."
+        )
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT + "\nApp context: " + payload.context.model_dump_json()},
+            {"role": "system", "content": SYSTEM_PROMPT + "\n" + language_instruction + "\nApp context: " + payload.context.model_dump_json()},
             *[message.model_dump() for message in payload.messages],
         ]
         try:
@@ -200,7 +228,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "https://openrouter.ai/api/v1/chat/completions",
                 headers={"Authorization": f"Bearer {token}"},
                 json={
-                    "model": config.openrouter_model,
+                    "model": config.openrouter_chat_model,
                     "messages": messages,
                     "max_tokens": config.openrouter_max_tokens,
                     "stream": False,
@@ -225,6 +253,99 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except (ValueError, KeyError, IndexError, TypeError) as error:
             raise HTTPException(502, "The AI provider returned an invalid reply. Please try again.") from error
         return ChatResponse(reply=reply.strip())
+
+    def gemini_token():
+        token = (config.gemini_key.get_secret_value().strip()
+                 or config.gemini_api_key.get_secret_value().strip()
+                 or config.google_api_key.get_secret_value().strip())
+        if not token:
+            raise HTTPException(503, "Voice chat is not configured. Set GEMINI_KEY in Backend/.env.")
+        return token
+
+    async def gemini_generate(request, model, payload):
+        try:
+            response = await request.app.state.openrouter_client.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                headers={"x-goog-api-key": gemini_token()}, json=payload,
+            )
+            response.raise_for_status()
+            return response.json()
+        except httpx.TimeoutException as error:
+            raise HTTPException(504, "The voice service took too long. Please try again.") from error
+        except httpx.HTTPStatusError as error:
+            status = error.response.status_code
+            if status == 429:
+                raise HTTPException(429, "Gemini voice is rate limited or its free quota is exhausted. Please try again later.") from error
+            if status in (400, 401, 403):
+                raise HTTPException(503, "Gemini voice is unavailable. Ask the administrator to check the API key and model access.") from error
+            raise HTTPException(502, "The Gemini voice service is unavailable. Please try again.") from error
+        except httpx.RequestError as error:
+            raise HTTPException(502, "Cannot reach the Gemini voice service. Please try again.") from error
+        except ValueError as error:
+            raise HTTPException(502, "The Gemini voice service returned an invalid response.") from error
+
+    @app.post("/api/chat/transcribe")
+    async def transcribe(request: Request, audio: UploadFile = File(...)):
+        gemini_token()
+        if audio.content_type not in ("audio/wav", "audio/x-wav", "audio/wave"):
+            raise HTTPException(415, "Please provide a WAV recording.")
+        data = await audio.read(2_000_001)
+        if not data or len(data) > 2_000_000:
+            raise HTTPException(413, "Recording is empty or too large. Record up to 30 seconds.")
+        if not data.startswith(b"RIFF") or data[8:12] != b"WAVE":
+            raise HTTPException(415, "The recording is not a valid WAV file.")
+        response = await gemini_generate(request, "gemini-3.5-transcribe", {
+            "contents": [{"parts": [{"inlineData": {
+                "mimeType": "audio/wav", "data": base64.b64encode(data).decode("ascii"),
+            }}]}],
+        })
+        try:
+            parts = response["candidates"][0]["content"]["parts"]
+            transcript = "".join(
+                part.get("audioTranscription", {}).get("text", "") or part.get("text", "")
+                for part in parts
+            ).strip()
+            if not transcript or len(transcript) > 2000:
+                raise ValueError("Invalid transcript")
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError) as error:
+            raise HTTPException(502, "No usable transcript was returned. Please try again or type your message.") from error
+        return {"text": transcript}
+
+    @app.post("/api/chat/speech")
+    async def speech(payload: SpeechRequest, request: Request):
+        response = await gemini_generate(request, "gemini-3.8-flash-lite-tts", {
+            "contents": [{"role": "user", "parts": [{"text": payload.text}]}],
+            "generationConfig": {
+                "responseModalities": ["AUDIO"],
+                "speechConfig": {"voiceConfig": {"voice": "Kore"}},
+            },
+        })
+        try:
+            parts = response["candidates"][0]["content"]["parts"]
+            inline = next(part["inlineData"] for part in parts if "inlineData" in part)
+            raw = base64.b64decode(inline["data"], validate=True)
+            mime = inline["mimeType"].lower()
+            if not raw or len(raw) > 15_000_000:
+                raise ValueError("Invalid audio length")
+            if mime.startswith("audio/wav"):
+                if not raw.startswith(b"RIFF") or raw[8:12] != b"WAVE":
+                    raise ValueError("Invalid WAV")
+                output = raw
+            elif mime.startswith("audio/l16"):
+                if len(raw) % 2:
+                    raise ValueError("Invalid PCM")
+                out = io.BytesIO()
+                with wave.open(out, "wb") as wav:
+                    wav.setnchannels(1)
+                    wav.setsampwidth(2)
+                    wav.setframerate(24000)
+                    wav.writeframes(raw)
+                output = out.getvalue()
+            else:
+                raise ValueError("Unsupported audio format")
+        except (ValueError, KeyError, IndexError, TypeError, StopIteration, binascii.Error) as error:
+            raise HTTPException(502, "The Gemini voice service returned invalid audio. Please try again.") from error
+        return Response(content=output, media_type="audio/wav", headers={"Cache-Control": "no-store"})
 
     # ------------------ Department Endpoints ------------------
 

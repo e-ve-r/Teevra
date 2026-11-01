@@ -1,7 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import Icon from "./Icon";
+import useTextToSpeech from "../hooks/useTextToSpeech";
+import useVoiceRecording from "../hooks/useVoiceRecording";
 
-export default function Assistant({ remaining, report, trackingStarted, onReportUpdate }) {
+export default function Assistant({ active = true, remaining, report, trackingStarted, onReportUpdate }) {
+  const speech = useTextToSpeech(active);
+  const [speechRate, setSpeechRate] = useState(1);
+  const [replyLanguage, setReplyLanguage] = useState("auto");
+  const [speakReplies, setSpeakReplies] = useState(true);
   const [messages, setMessages] = useState([
     {
       id: "welcome",
@@ -9,13 +15,20 @@ export default function Assistant({ remaining, report, trackingStarted, onReport
       text: "Hi, I’m Teevra Assist. I can share basic first-aid steps while you wait for professional help, or help you use the app. For an emergency, call your local emergency service directly—this app cannot dispatch help. What happened?",
     },
   ]);
-  const [shareUpdates, setShareUpdates] = useState(true);
+  const [shareUpdates, setShareUpdates] = useState(false);
   const [draft, setDraft] = useState("");
+  const voice = useVoiceRecording(active, (text) => {
+    setDraft((current) => [current.trim(), text].filter(Boolean).join(" "));
+  });
   const [typing, setTyping] = useState(false);
   const [error, setError] = useState("");
   const [failedMessages, setFailedMessages] = useState(null);
   const requestController = useRef(null);
   const messageList = useRef(null);
+  const activeRef = useRef(active);
+  const speechSettingsRef = useRef({ speakReplies, speechRate });
+  useEffect(() => { activeRef.current = active; }, [active]);
+  useEffect(() => { speechSettingsRef.current = { speakReplies, speechRate }; }, [speakReplies, speechRate]);
   useEffect(() => () => requestController.current?.abort(), []);
   useEffect(() => {
     if (messageList.current)
@@ -45,6 +58,7 @@ export default function Assistant({ remaining, report, trackingStarted, onReport
             has_report: Boolean(report),
             attachment_count: report?.attachments?.length || 0,
           },
+          reply_language: replyLanguage,
         }),
       });
       const data = await response.json().catch(() => null);
@@ -55,10 +69,14 @@ export default function Assistant({ remaining, report, trackingStarted, onReport
       if (typeof data?.reply !== "string" || !data.reply.trim()) {
         throw new Error("The assistant returned an empty reply. Please try again.");
       }
+      const reply = { id: crypto.randomUUID(), from: "assistant", text: data.reply };
       setMessages((current) => [
         ...current,
-        { id: crypto.randomUUID(), from: "assistant", text: data.reply },
+        reply,
       ]);
+      if (speechSettingsRef.current.speakReplies && activeRef.current) {
+        speech.speak(reply.id, reply.text, speechSettingsRef.current.speechRate);
+      }
     } catch (failure) {
       setError(failure.name === "AbortError"
         ? "The request timed out. Please try again."
@@ -77,6 +95,10 @@ export default function Assistant({ remaining, report, trackingStarted, onReport
     event?.preventDefault();
     const text = (suggestion || draft).trim();
     if (!text || typing) return;
+    if (text.length > 2000) {
+      setError("Your message is over 2,000 characters. Please shorten it before sending.");
+      return;
+    }
     const conversation = [
       ...messages,
       { id: crypto.randomUUID(), from: "user", text },
@@ -109,6 +131,45 @@ export default function Assistant({ remaining, report, trackingStarted, onReport
         </div>
         <span className="small-badge">AI</span>
       </div>
+      <div className="chat-speech-settings">
+        <span>
+          <Icon name="volume" size={17} />
+          {speech.supported ? "Speak a message and listen to replies." : "Audio playback is not supported in this browser."}
+        </span>
+        <label>
+          Reply language
+          <select value={replyLanguage} onChange={(event) => setReplyLanguage(event.target.value)}>
+            <option value="auto">Same as my message</option>
+            {["English", "Hindi", "Spanish", "French", "Bengali", "Tamil", "Telugu", "Marathi"].map((language) => (
+              <option key={language} value={language}>{language}</option>
+            ))}
+          </select>
+        </label>
+        {speech.supported && (
+          <label>
+            Reading speed
+            <select
+              value={speechRate}
+              onChange={(event) => {
+                speech.stop();
+                setSpeechRate(Number(event.target.value));
+              }}
+            >
+              <option value={0.75}>0.75×</option>
+              <option value={1}>1×</option>
+              <option value={1.25}>1.25×</option>
+              <option value={1.5}>1.5×</option>
+            </select>
+          </label>
+        )}
+        {speech.supported && <label className="chat-auto-speech">
+          <input type="checkbox" checked={speakReplies} onChange={(event) => {
+            setSpeakReplies(event.target.checked);
+            if (!event.target.checked) speech.stop();
+          }} />
+          Read new replies aloud
+        </label>}
+      </div>
       <div
         className="chat-messages"
         ref={messageList}
@@ -128,6 +189,20 @@ export default function Assistant({ remaining, report, trackingStarted, onReport
               <span className="message-time">
                 {message.from === "assistant" ? "Teevra Assist" : "You"}
               </span>
+              {message.from === "assistant" && speech.supported && (
+                <button
+                  type="button"
+                  className="message-read-aloud"
+                  aria-label={speech.playingId === message.id ? "Stop reading this reply" : "Read this reply aloud"}
+                  aria-pressed={speech.playingId === message.id}
+                  onClick={() => speech.playingId === message.id
+                    ? speech.stop()
+                    : speech.speak(message.id, message.text, speechRate)}
+                >
+                  <Icon name={speech.playingId === message.id ? "stop" : "volume"} size={15} />
+                  {speech.playingId === message.id ? "Stop" : "Read aloud"}
+                </button>
+              )}
             </div>
           </div>
         ))}
@@ -137,6 +212,7 @@ export default function Assistant({ remaining, report, trackingStarted, onReport
           </div>
         )}
       </div>
+      {(speech.error || voice.error) && <p className="chat-speech-error" role="alert">{speech.error || voice.error}</p>}
       {messages.length === 1 && (
         <div className="chat-suggestions">
           <span>YOU CAN ASK</span>
@@ -157,6 +233,18 @@ export default function Assistant({ remaining, report, trackingStarted, onReport
         </div>
       )}
       {onReportUpdate && <label className="chat-share-update"><input type="checkbox" checked={shareUpdates} onChange={(e) => setShareUpdates(e.target.checked)} />Share my messages as updates to report {report.id}</label>}
+      <div className="chat-recording">
+        <button
+          type="button"
+          className={`chat-record-button ${voice.status === "recording" ? "is-recording" : ""}`}
+          disabled={!voice.supported || typing || ["starting", "transcribing"].includes(voice.status)}
+          onClick={voice.status === "recording" ? voice.stop : voice.start}
+        >
+          <Icon name={voice.status === "recording" ? "stop" : "mic"} size={17} />
+          {voice.status === "recording" ? "Stop recording" : voice.status === "starting" ? "Starting microphone…" : voice.status === "transcribing" ? "Transcribing…" : "Speak your message"}
+        </button>
+        <span>{voice.supported ? "Up to 30 seconds. Review the transcript before sending." : "Voice input is unavailable in this browser."}</span>
+      </div>
       <form className="chat-composer" onSubmit={sendMessage}>
         <label className="sr-only" htmlFor="chat-input">
           Message Teevra Assist
@@ -169,12 +257,12 @@ export default function Assistant({ remaining, report, trackingStarted, onReport
           maxLength={2000}
           autoComplete="off"
         />
-        <button aria-label="Send message" disabled={!draft.trim() || typing}>
+        <button aria-label="Send message" disabled={!draft.trim() || typing || voice.status !== "idle"}>
           <Icon name="send" size={21} />
         </button>
       </form>
       <p className="chat-disclaimer">
-        AI can make mistakes. Not an emergency service. Messages are sent to OpenRouter and its inference provider.
+        AI can make mistakes. Not an emergency service. Recordings and spoken replies are sent to Google Gemini; chat messages go to OpenRouter and its providers.
       </p>
     </section>
   );

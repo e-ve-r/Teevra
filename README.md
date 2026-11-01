@@ -26,6 +26,12 @@ Reports accept text, photos and recorded or uploaded audio. A callback mobile nu
 
 After submitting, the reporter follows saved assignment/status information and can add more text, photos or voice notes to the same incident. Chat messages can also become incident updates through the visible sharing checkbox. Each update is saved, re-evaluated against the full timestamped history, and reflected on the responder dashboard through three second polling. The incident's original report time is preserved. The report ID and reporter name survive refresh within the browser session; reports and media remain in backend storage.
 
+## Voice chat and translation
+
+On the reporter's **AI chat** screen, choose **Speak your message**, allow microphone access, and speak for up to 30 seconds. Choose **Stop recording** (or wait for the limit), then review and edit the transcript in the message box before sending it. The reply-language selector can translate the response into a chosen language or match the message language. Replies are read aloud automatically when the checkbox is enabled; use **Read aloud** or **Stop** beneath a reply to control playback. Playback speed can be adjusted from 0.75× to 1.5×. The recording and playback stop when leaving chat or hiding the tab.
+
+Voice chat requires microphone access, a compatible browser, a network connection, and server-side `GEMINI_KEY` and `OPENROUTER_API_KEY` values. Recordings and reply text for speech go to Google Gemini; chat messages go to OpenRouter and its selected inference providers. Gemini 3.5 Transcribe and Gemini 3.8 Flash-Lite TTS offer free tiers, and chat uses OpenRouter's free router; see [backend configuration](Backend/README.md). Google may use free-tier content to improve its products. Free models can be unavailable or rate limited, and automatic audio may require a tap on **Read aloud**. The transcript is AI-generated and should be checked before sending, especially for incident details. Chat messages shared to a report also trigger that report's separately configured triage model.
+
 ## Response workspace
 
 Stats appear in the main workspace. The queue orders open incidents by priority band, severity and time waiting; closed incidents appear separately. The score is `priority band + severity × 0.7 + min(waiting minutes, 120) × 0.25`, with priority bands of 200 / 100 / 0 for P1 / P2 / P3. Older reports win equal scores. Aging cannot let standard incidents displace critical ones.
@@ -40,6 +46,7 @@ Worsening reports can increase priority and change recommendations. Reassessment
 
 ```sh
 npm run lint
+npm test
 npm run build
 Backend/.venv/bin/python -m unittest discover -s Backend/tests -v
 ```

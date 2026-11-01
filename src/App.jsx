@@ -436,6 +436,7 @@ export default function App() {
             Ask a question. We’re right here with you.
           </PageHeading>
           <Assistant
+            active={page === "chat"}
             remaining={0}
             report={report}
             trackingStarted={false}
